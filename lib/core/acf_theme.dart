@@ -15,11 +15,10 @@ ThemeData buildAcfTheme() {
       elevation: 0,
     ),
 
-    // Flutter's ThemeData.cardTheme expects CardThemeData on newer versions.
-    // Keep this non-const (safer across Flutter versions) and use const values inside.
-    cardTheme: CardThemeData(
+    // Use CardThemeData to avoid Flutter type mismatch errors
+    cardTheme: const CardThemeData(
       elevation: 0,
-      shape: const RoundedRectangleBorder(
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.all(Radius.circular(16)),
         side: BorderSide(color: Colors.black12),
       ),
