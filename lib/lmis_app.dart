@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'core/acf_theme.dart';
+import 'screens/auth_gate.dart';
 import 'screens/login_screen.dart';
-import 'screens/home_screen.dart';
+import 'screens/main_shell.dart';
 
 class LmisApp extends StatelessWidget {
   const LmisApp({super.key});
@@ -12,11 +13,13 @@ class LmisApp extends StatelessWidget {
     return MaterialApp(
       title: 'LMIS ACF',
       debugShowCheckedModeBanner: false,
-      theme: buildAcfTheme(),
-      home: const LoginScreen(), // change to HomeScreen() if needed
+      theme: buildAcfTheme(brightness: Brightness.light),
+      darkTheme: buildAcfTheme(brightness: Brightness.dark),
+      themeMode: ThemeMode.system,
+      home: const AuthGate(),
       routes: {
         '/login': (_) => const LoginScreen(),
-        '/home': (_) => const HomeScreen(),
+        '/home': (_) => const MainShell(),
       },
     );
   }

@@ -7,7 +7,10 @@ plugins {
 
 android {
     namespace = "com.example.lmis_acf"
-    compileSdk = flutter.compileSdkVersion
+
+    // ✅ Force a modern compile SDK so android:attr/lStar exists (API 31+)
+    compileSdk = 36
+
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -20,21 +23,37 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.lmis_acf"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+
+        // Keep minSdk from Flutter unless you have a strict requirement
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+
+        // ✅ Force target SDK to match compile SDK (recommended)
+        targetSdk = 36
+
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // For testing builds, debug signing is OK
             signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+}
+
+// ✅ Force all Android subprojects (plugins like isar_flutter_libs) to compile with SDK 34
+subprojects {
+    afterEvaluate {
+        extensions.findByName("android")?.let { ext ->
+            try {
+                // Works for com.android.library and com.android.application modules
+                val method = ext.javaClass.getMethod("setCompileSdkVersion", Int::class.javaPrimitiveType)
+                method.invoke(ext, 34)
+            } catch (_: Throwable) {
+                // Ignore non-Android modules
+            }
         }
     }
 }
