@@ -13,11 +13,10 @@ import '../widgets/acf_brand.dart';
 
 /// Facility Store (Boxes + Sachets)
 ///
-/// Updated behaviour (as requested):
-/// - Show ONLY facility totals: boxes remaining + sachets remaining
-/// - NO active box selection and NO scanning before dispensing
-/// - Stock reduces locally based on locally saved enrollment/follow-up records
-/// - Server is updated during sync (SyncService) and can be refreshed from server
+/// Shared-stock behaviour:
+/// - server summary is the confirmed facility truth
+/// - this screen overlays ONLY this phone's unsynced local dispenses
+/// - totals therefore stay aligned across multiple users once sync happens
 class FacilityStoreScreen extends StatefulWidget {
   const FacilityStoreScreen({super.key});
 
@@ -37,6 +36,10 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
 
   bool _loading = true;
   bool _refreshing = false;
+
+  int? _serverTotalSachetsRemaining;
+  int? _serverBoxesInStore;
+  DateTime? _lastServerRefreshAt;
 
   @override
   void initState() {
@@ -59,11 +62,23 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
       else if (code.isNotEmpty) label = code;
     }
 
+    int? serverTotal;
+    int? serverBoxes;
+    DateTime? refreshedAt;
+    if (facilityId != null && facilityId.isNotEmpty) {
+      serverTotal = await _settingsRepo.getCachedFacilityStoreSachetsRemaining(facilityId);
+      serverBoxes = await _settingsRepo.getCachedFacilityStoreBoxesInStore(facilityId);
+      refreshedAt = await _settingsRepo.getCachedFacilityStoreUpdatedAt(facilityId);
+    }
+
     if (!mounted) return;
     setState(() {
       _me = me;
       _facilityId = facilityId;
       _facilityLabel = label;
+      _serverTotalSachetsRemaining = serverTotal;
+      _serverBoxesInStore = serverBoxes;
+      _lastServerRefreshAt = refreshedAt;
       _loading = false;
     });
   }
@@ -73,13 +88,14 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
     return !r.contains(ConnectivityResult.none);
   }
 
-  /// Sum sachets dispensed across all local assessments that contain a `visit` section.
-  /// Includes enrollment + follow-up.
-  int _sumDispensedSachets(List<dynamic> assessmentsJson) {
+  int _sumPendingDispensedSachets(List<dynamic> assessmentsJson) {
     int total = 0;
 
     for (final a in assessmentsJson) {
       if (a is! Map<String, dynamic>) continue;
+      final status = (a['status'] ?? '').toString().toUpperCase();
+      if (status == 'SYNCED') continue;
+
       final raw = (a['dataJson'] ?? '').toString();
       if (raw.trim().isEmpty) continue;
 
@@ -100,16 +116,14 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
     return total;
   }
 
-  /// Compute remaining per box using a simple FEFO simulation.
-  ///
-  /// This lets totals reduce locally even without scanning boxes.
-  /// Assumption: sachets are consumed sequentially from the earliest-expiring boxes.
-  List<_StoreRow> _simulateRemainingPerBox(List<dynamic> boxes, int totalDispensed) {
-    // Normalize and sort boxes by expiry (null -> far future), then boxUid.
+  List<_StoreRow> _simulateRemainingPerBox({
+    required List<dynamic> boxes,
+    required int baseSachetsRemaining,
+    required int pendingLocalDispensed,
+  }) {
     final rows = boxes
         .whereType<dynamic>()
         .map((b) {
-          // b is BoxCache
           final uid = (b.boxUid ?? '').toString();
           final batchNo = (b.batchNo ?? '').toString().trim().isEmpty ? null : b.batchNo;
           final exp = b.expiryDate as DateTime?;
@@ -126,20 +140,35 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
       return a.boxUid.compareTo(b.boxUid);
     });
 
-    int remainingToAllocate = totalDispensed;
+    final totalCapacity = rows.length * 600;
+    final safeBaseRemaining = baseSachetsRemaining.clamp(0, totalCapacity).toInt();
+    int totalConsumed = totalCapacity - safeBaseRemaining + pendingLocalDispensed;
+
     for (final r in rows) {
       int remaining = 600;
-      if (remainingToAllocate > 0) {
-        final take = remainingToAllocate >= 600 ? 600 : remainingToAllocate;
+      if (totalConsumed > 0) {
+        final take = totalConsumed >= 600 ? 600 : totalConsumed;
         remaining -= take;
-        remainingToAllocate -= take;
+        totalConsumed -= take;
       }
-      r.remaining = remaining.clamp(0, 600);
+      r.remaining = remaining.clamp(0, 600).toInt();
     }
 
     return rows;
   }
 
+
+
+  Future<_CachedStoreSnapshot> _readCachedStoreSnapshot(String facilityId) async {
+    final total = await _settingsRepo.getCachedFacilityStoreSachetsRemaining(facilityId);
+    final boxes = await _settingsRepo.getCachedFacilityStoreBoxesInStore(facilityId);
+    final refreshedAt = await _settingsRepo.getCachedFacilityStoreUpdatedAt(facilityId);
+    return _CachedStoreSnapshot(
+      totalSachetsRemaining: total,
+      boxesInStore: boxes,
+      refreshedAt: refreshedAt,
+    );
+  }
   Future<void> _refreshFromServer() async {
     if (_refreshing) return;
     final online = await _isOnline();
@@ -162,19 +191,31 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
       final data = resp.data;
       if (data is Map) {
         final m = data.cast<String, dynamic>();
-        final boxes = m['boxes'];
-        if (boxes is List) {
-          final uids = <String>[];
-          for (final b in boxes.whereType<Map>()) {
-            final uid = (b['boxUid'] ?? '').toString().trim();
-            if (uid.isNotEmpty) uids.add(uid);
+        final boxesRaw = m['boxes'];
+        final boxes = <Map<String, dynamic>>[];
+        if (boxesRaw is List) {
+          for (final row in boxesRaw.whereType<Map>()) {
+            boxes.add(row.cast<String, dynamic>());
           }
-          await _boxRepo.upsertMinimalMany(
-            boxUids: uids,
-            status: 'IN_FACILITY',
-            currentFacilityId: facilityId,
-          );
         }
+
+        final totalSachetsRemaining =
+            (m['totalSachetsRemaining'] is num) ? (m['totalSachetsRemaining'] as num).round() : 0;
+        final boxesInStore = (m['boxesInStore'] is num) ? (m['boxesInStore'] as num).round() : boxes.length;
+
+        await _settingsRepo.cacheFacilityStoreSummary(
+          facilityId: facilityId,
+          totalSachetsRemaining: totalSachetsRemaining,
+          boxesInStore: boxesInStore,
+        );
+        await _boxRepo.upsertFromStoreSummary(boxes: boxes, facilityId: facilityId);
+
+        if (!mounted) return;
+        setState(() {
+          _serverTotalSachetsRemaining = totalSachetsRemaining;
+          _serverBoxesInStore = boxesInStore;
+          _lastServerRefreshAt = DateTime.now();
+        });
       }
       _toast('Store refreshed from server');
     } catch (e) {
@@ -223,19 +264,37 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
                     builder: (context, snapshot) {
                       final boxes = snapshot.data ?? const [];
 
-                      return StreamBuilder(
-                        stream: _assessRepo.watchAll(limit: 5000),
-                        builder: (context, assessSnap) {
-                          final assessments = assessSnap.data ?? const [];
+                      return FutureBuilder<_CachedStoreSnapshot>(
+                        future: _readCachedStoreSnapshot(facilityId),
+                        builder: (context, storeSnap) {
+                          final cachedStore = storeSnap.data;
+                          final effectiveServerTotal =
+                              cachedStore?.totalSachetsRemaining ?? _serverTotalSachetsRemaining ?? (boxes.length * 600);
+                          final effectiveServerBoxes =
+                              cachedStore?.boxesInStore ?? _serverBoxesInStore ?? boxes.length;
+                          final effectiveRefreshAt = cachedStore?.refreshedAt ?? _lastServerRefreshAt;
 
-                          final assessJson = assessments.map((a) => {'dataJson': a.dataJson}).toList();
-                          final totalDispensed = _sumDispensedSachets(assessJson);
+                          return StreamBuilder(
+                            stream: _assessRepo.watchAll(limit: 5000),
+                            builder: (context, assessSnap) {
+                              final assessments = assessSnap.data ?? const [];
+                              final assessJson = assessments
+                                  .map((a) => {'dataJson': a.dataJson, 'status': a.status})
+                                  .toList();
+                              final pendingLocalDispensed = _sumPendingDispensedSachets(assessJson);
 
-                          final rows = _simulateRemainingPerBox(boxes, totalDispensed);
-                          final boxesRemaining = rows.where((r) => r.remaining > 0).length;
-                          final sachetsRemaining = rows.fold<int>(0, (acc, r) => acc + r.remaining);
+                              final rows = _simulateRemainingPerBox(
+                                boxes: boxes,
+                                baseSachetsRemaining: effectiveServerTotal,
+                                pendingLocalDispensed: pendingLocalDispensed,
+                              );
+                              final boxesRemaining = rows.where((r) => r.remaining > 0).length;
+                              final projectedSachetsRemaining = rows.fold<int>(0, (acc, r) => acc + r.remaining);
+                              final lastRefreshText = effectiveRefreshAt == null
+                                  ? 'No server refresh yet'
+                                  : 'Server refreshed: ${_fmtDateTime(effectiveRefreshAt)}';
 
-                          return ListView(
+                              return ListView(
                             children: [
                               Card(
                                 child: Padding(
@@ -264,7 +323,6 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
                                         ],
                                       ),
                                       const SizedBox(height: 10),
-
                                       Row(
                                         children: [
                                           Expanded(
@@ -278,32 +336,34 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
                                           Expanded(
                                             child: _MetricCard(
                                               title: 'Sachets remaining',
-                                              value: '$sachetsRemaining',
+                                              value: '$projectedSachetsRemaining',
                                               icon: Icons.medication_outlined,
                                             ),
                                           ),
                                         ],
                                       ),
-
                                       const SizedBox(height: 10),
                                       Text(
-                                        'Received boxes (cached): ${boxes.length} • Dispensed (local): $totalDispensed',
+                                        'Confirmed by server: $effectiveServerTotal sachets • Pending on this phone: $pendingLocalDispensed',
+                                        style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        '$effectiveServerBoxes boxes in store • $lastRefreshText',
                                         style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                                       ),
                                     ],
                                   ),
                                 ),
                               ),
-
                               const SizedBox(height: 12),
-
                               Card(
                                 child: Padding(
                                   padding: const EdgeInsets.all(16),
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.stretch,
                                     children: [
-                                      const Text('Boxes (FEFO view)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                                      const Text('Boxes (projected FEFO view)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
                                       const SizedBox(height: 10),
                                       if (rows.isEmpty)
                                         Text('No boxes in store. Receive from manifest first.', style: TextStyle(color: cs.onSurfaceVariant))
@@ -327,7 +387,7 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
                                                       Text(r.boxUid, style: const TextStyle(fontWeight: FontWeight.w900), overflow: TextOverflow.ellipsis),
                                                       const SizedBox(height: 2),
                                                       Text(
-                                                        'Remaining: ${r.remaining} sachets'
+                                                        'Projected remaining: ${r.remaining} sachets'
                                                         '${r.batchNo == null ? '' : '  •  Batch ${r.batchNo}'}'
                                                         '${r.expiryDate == null ? '' : '  •  Exp ${_fmtYmd(r.expiryDate!)}'}',
                                                         style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
@@ -344,14 +404,15 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
                                   ),
                                 ),
                               ),
-
                               const SizedBox(height: 10),
                               Text(
-                                'Note: Clinicians do not scan boxes while dispensing. The server auto-allocates sachets from the earliest-expiring boxes during sync.',
+                                'This screen uses server-confirmed facility stock, then subtracts only unsynced dispenses on this phone. That keeps multiple users aligned once sync happens.',
                                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                                 textAlign: TextAlign.center,
                               ),
                             ],
+                              );
+                            },
                           );
                         },
                       );
@@ -367,6 +428,27 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
     final day = d.day.toString().padLeft(2, '0');
     return '$y-$m-$day';
   }
+
+  static String _fmtDateTime(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    final hh = d.hour.toString().padLeft(2, '0');
+    final mm = d.minute.toString().padLeft(2, '0');
+    return '$y-$m-$day $hh:$mm';
+  }
+}
+
+class _CachedStoreSnapshot {
+  final int? totalSachetsRemaining;
+  final int? boxesInStore;
+  final DateTime? refreshedAt;
+
+  const _CachedStoreSnapshot({
+    required this.totalSachetsRemaining,
+    required this.boxesInStore,
+    required this.refreshedAt,
+  });
 }
 
 class _MetricCard extends StatelessWidget {

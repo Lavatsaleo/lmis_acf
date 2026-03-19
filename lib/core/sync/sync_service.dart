@@ -8,6 +8,7 @@ import '../../data/local/isar/sync_queue_item.dart';
 import '../../data/local/clinical/clinical_child_repo.dart';
 import '../../data/local/clinical/clinical_assessment_repo.dart';
 import '../../data/local/cache/box_cache_repo.dart';
+import '../../data/local/auth/session_store.dart';
 import '../../data/remote/api_client.dart';
 import '../config/app_config.dart';
 
@@ -36,6 +37,7 @@ class SyncService {
   final ClinicalChildRepo _childRepo;
   final ClinicalAssessmentRepo _assessRepo;
   final BoxCacheRepo _boxRepo;
+  final SessionStore _sessionStore;
 
   SyncService({
     SyncQueueRepo? queueRepo,
@@ -44,12 +46,14 @@ class SyncService {
     ClinicalChildRepo? childRepo,
     ClinicalAssessmentRepo? assessRepo,
     BoxCacheRepo? boxRepo,
+    SessionStore? sessionStore,
   })  : _queueRepo = queueRepo ?? SyncQueueRepo(),
         _settingsRepo = settingsRepo ?? AppSettingsRepo(),
         _connectivity = connectivity ?? Connectivity(),
         _childRepo = childRepo ?? ClinicalChildRepo(),
         _assessRepo = assessRepo ?? ClinicalAssessmentRepo(),
-        _boxRepo = boxRepo ?? BoxCacheRepo();
+        _boxRepo = boxRepo ?? BoxCacheRepo(),
+        _sessionStore = sessionStore ?? SessionStore();
 
   Future<bool> isOnline() async {
     final results = await _connectivity.checkConnectivity();
@@ -132,6 +136,7 @@ class SyncService {
             httpStatus: statusCode,
             responseJson: responseJson,
           );
+          await _refreshFacilityStoreSummaryCache(api, item: item);
         } else {
           failed += 1;
           await _queueRepo.markAsFailed(
@@ -141,11 +146,56 @@ class SyncService {
         }
       } catch (e) {
         failed += 1;
+        await _maybeRefreshStoreSummaryAfterError(api, e);
         await _queueRepo.markAsFailed(queueId: item.queueId, error: e.toString());
       }
     }
 
     return SyncRunResult(attempted: attempted, sent: sent, failed: failed, online: true);
+  }
+
+  Future<void> _maybeRefreshStoreSummaryAfterError(ApiClient api, Object error) async {
+    final text = error.toString();
+    if (!text.contains('409')) return;
+    try {
+      await _refreshFacilityStoreSummaryCache(api);
+    } catch (_) {
+      // ignore secondary refresh errors
+    }
+  }
+
+  Future<void> _refreshFacilityStoreSummaryCache(ApiClient api, {SyncQueueItem? item}) async {
+    try {
+      final me = await _sessionStore.readUserJson();
+      final facilityId = (me?['facilityId'] ?? '').toString().trim();
+      if (facilityId.isEmpty) return;
+
+      final resp = await api.request(method: 'GET', path: AppConfig.facilityStoreSummaryPath);
+      final data = resp.data;
+      if (data is! Map) return;
+
+      final m = data.cast<String, dynamic>();
+      final boxesRaw = m['boxes'];
+      final boxes = <Map<String, dynamic>>[];
+      if (boxesRaw is List) {
+        for (final row in boxesRaw.whereType<Map>()) {
+          boxes.add(row.cast<String, dynamic>());
+        }
+      }
+
+      final totalSachetsRemaining =
+          (m['totalSachetsRemaining'] is num) ? (m['totalSachetsRemaining'] as num).round() : 0;
+      final boxesInStore = (m['boxesInStore'] is num) ? (m['boxesInStore'] as num).round() : boxes.length;
+
+      await _settingsRepo.cacheFacilityStoreSummary(
+        facilityId: facilityId,
+        totalSachetsRemaining: totalSachetsRemaining,
+        boxesInStore: boxesInStore,
+      );
+      await _boxRepo.upsertFromStoreSummary(boxes: boxes, facilityId: facilityId);
+    } catch (_) {
+      // Do not fail sync because store refresh failed.
+    }
   }
 
   Future<void> _applySuccessSideEffects(SyncQueueItem item, dynamic responseData) async {

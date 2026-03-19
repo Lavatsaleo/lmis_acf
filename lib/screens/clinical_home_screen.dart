@@ -12,6 +12,7 @@ import 'queue_inspector_screen.dart';
 import '../widgets/acf_brand.dart';
 import '../widgets/acf_tiles.dart';
 import '../core/sync/sync_service.dart';
+import '../data/remote/clinical_remote_sync_service.dart';
 
 class ClinicalHomeScreen extends StatefulWidget {
   const ClinicalHomeScreen({super.key});
@@ -29,7 +30,12 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
   Map<String, dynamic>? _user;
   String? _role;
 
+  final ClinicalRemoteSyncService _remoteSync = ClinicalRemoteSyncService();
+
   bool _loading = true;
+  bool _facilityActivityLoading = false;
+  bool _usingLocalActivityFallback = false;
+  List<Map<String, dynamic>> _facilityActivity = const [];
 
   @override
   void initState() {
@@ -38,7 +44,6 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
   }
 
   Future<void> _load() async {
-    // SessionStore persists the user profile as JSON.
     final user = await _session.readUserJson();
     if (!mounted) return;
     setState(() {
@@ -46,6 +51,46 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
       _role = (user?['role'] ?? '').toString().toUpperCase();
       _loading = false;
     });
+    await _refreshFacilityActivity();
+  }
+
+  Future<void> _refreshFacilityActivity() async {
+    if (!_canUseClinical) return;
+    if (mounted) {
+      setState(() => _facilityActivityLoading = true);
+    }
+    try {
+      final rows = await _remoteSync.fetchRecentFacilityChildren(date: DateTime.now(), take: 50);
+      if (!mounted) return;
+      setState(() {
+        _facilityActivity = rows;
+        _usingLocalActivityFallback = false;
+        _facilityActivityLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _usingLocalActivityFallback = true;
+        _facilityActivityLoading = false;
+      });
+    }
+  }
+
+  Future<void> _openRemoteChild(Map<String, dynamic> row) async {
+    try {
+      final child = (row['child'] is Map) ? (row['child'] as Map).cast<String, dynamic>() : const <String, dynamic>{};
+      final remoteChildId = (child['id'] ?? '').toString().trim();
+      if (remoteChildId.isEmpty) return;
+      final localChildId = await _remoteSync.importChildSummaryByRemoteId(remoteChildId);
+      if (!mounted || localChildId == null || localChildId.trim().isEmpty) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ClinicalChildDetailScreen(localChildId: localChildId)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open child: $e')));
+    }
   }
 
   bool get _canUseClinical {
@@ -70,6 +115,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
             icon: const Icon(Icons.sync),
             onPressed: () async {
               final result = await _syncService.syncNow();
+              await _refreshFacilityActivity();
               if (!context.mounted) return;
               final msg = result.online
                   ? 'Sync done: sent ${result.sent}, failed ${result.failed}.'
@@ -178,54 +224,103 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
             ),
 
             const SizedBox(height: 16),
-            const Text('Recent local enrollments', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text("Today's facility activity", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+                ),
+                IconButton(
+                  tooltip: 'Refresh facility activity',
+                  onPressed: _refreshFacilityActivity,
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
+            if (_usingLocalActivityFallback)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'Showing local cache because live facility activity could not be reached.',
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: FontWeight.w700),
+                ),
+              ),
 
             Expanded(
-              child: StreamBuilder<List<ClinicalChild>>(
-                stream: _childRepo.watchAll(limit: 50),
-                builder: (context, snapshot) {
-                  final items = snapshot.data ?? const <ClinicalChild>[];
+              child: _facilityActivityLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : (!_usingLocalActivityFallback && _facilityActivity.isNotEmpty)
+                      ? ListView.separated(
+                          itemCount: _facilityActivity.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 10),
+                          itemBuilder: (context, i) {
+                            final row = _facilityActivity[i];
+                            final child = (row['child'] is Map) ? (row['child'] as Map).cast<String, dynamic>() : const <String, dynamic>{};
+                            final caregiver = (child['caregiver'] is Map)
+                                ? (child['caregiver'] as Map).cast<String, dynamic>()
+                                : const <String, dynamic>{};
+                            final visit = (row['visit'] is Map) ? (row['visit'] as Map).cast<String, dynamic>() : const <String, dynamic>{};
+                            final subtitle = [
+                              if ((child['cwcNumber'] ?? '').toString().trim().isNotEmpty) 'CWC: ${child['cwcNumber']}',
+                              if ((visit['visitDate'] ?? '').toString().trim().isNotEmpty) 'Visit: ${visit['visitDate'].toString().split('T').first}',
+                              if ((row['latestAppointmentDate'] ?? '').toString().trim().isNotEmpty) 'Next appt: ${row['latestAppointmentDate'].toString().split('T').first}',
+                              if ((caregiver['contacts'] ?? '').toString().trim().isNotEmpty) 'Tel: ${caregiver['contacts']}',
+                            ].join(' • ');
 
-                  if (items.isEmpty) {
-                    return _EmptyState(
-                      title: 'No local enrollments yet',
-                      subtitle: _canUseClinical
-                          ? 'Tap “Register child” to start an enrollment (works offline).'
-                          : 'You are logged in, but your account does not have clinical permissions.',
-                    );
-                  }
+                            return ListTile(
+                              tileColor: Theme.of(context).colorScheme.surface,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              title: Text('${child['firstName'] ?? ''} ${child['lastName'] ?? ''}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                              subtitle: Text(subtitle.isEmpty ? 'Facility activity' : subtitle),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => _openRemoteChild(row),
+                            );
+                          },
+                        )
+                      : StreamBuilder<List<ClinicalChild>>(
+                          stream: _childRepo.watchAll(limit: 50),
+                          builder: (context, snapshot) {
+                            final items = snapshot.data ?? const <ClinicalChild>[];
 
-                  return ListView.separated(
-                    itemCount: items.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (context, i) {
-                      final c = items[i];
-                      final subtitle = [
-                        if ((c.cwcNumber ?? '').isNotEmpty) 'CWC: ${c.cwcNumber}',
-                        if (c.dateOfBirth != null) 'DOB: ${_fmtDate(c.dateOfBirth!)}',
-                        'Status: ${c.status}',
-                      ].join(' • ');
+                            if (items.isEmpty) {
+                              return _EmptyState(
+                                title: 'No local enrollments yet',
+                                subtitle: _canUseClinical
+                                    ? 'Tap “Register child” to start an enrollment (works offline).'
+                                    : 'You are logged in, but your account does not have clinical permissions.',
+                              );
+                            }
 
-                      return ListTile(
-                        tileColor: Theme.of(context).colorScheme.surface,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                        title: Text('${c.firstName} ${c.lastName}', style: const TextStyle(fontWeight: FontWeight.w800)),
-                        subtitle: Text(subtitle),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => ClinicalChildDetailScreen(localChildId: c.localChildId),
-                            ),
-                          );
-                        },
-                      );
-                    },
-                  );
-                },
-              ),
+                            return ListView.separated(
+                              itemCount: items.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 10),
+                              itemBuilder: (context, i) {
+                                final c = items[i];
+                                final subtitle = [
+                                  if ((c.cwcNumber ?? '').isNotEmpty) 'CWC: ${c.cwcNumber}',
+                                  if (c.dateOfBirth != null) 'DOB: ${_fmtDate(c.dateOfBirth!)}',
+                                  'Status: ${c.status}',
+                                ].join(' • ');
+
+                                return ListTile(
+                                  tileColor: Theme.of(context).colorScheme.surface,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                  title: Text('${c.firstName} ${c.lastName}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                                  subtitle: Text(subtitle),
+                                  trailing: const Icon(Icons.chevron_right),
+                                  onTap: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => ClinicalChildDetailScreen(localChildId: c.localChildId),
+                                      ),
+                                    );
+                                  },
+                                );
+                              },
+                            );
+                          },
+                        ),
             ),
           ],
         ),

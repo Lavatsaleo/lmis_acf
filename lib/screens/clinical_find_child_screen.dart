@@ -1,15 +1,9 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:uuid/uuid.dart';
 
 import '../data/local/clinical/clinical_child_repo.dart';
-import '../data/local/clinical/clinical_assessment_repo.dart';
-import '../data/local/settings/app_settings_repo.dart';
-import '../data/remote/api_client.dart';
 import '../data/local/isar/clinical_child.dart';
-import '../data/local/isar/clinical_assessment.dart';
+import '../data/remote/clinical_remote_sync_service.dart';
 import 'clinical_child_detail_screen.dart';
 import '../widgets/acf_brand.dart';
 
@@ -22,10 +16,8 @@ class ClinicalFindChildScreen extends StatefulWidget {
 
 class _ClinicalFindChildScreenState extends State<ClinicalFindChildScreen> {
   final _repo = ClinicalChildRepo();
-  final _assessRepo = ClinicalAssessmentRepo();
-  final _settingsRepo = AppSettingsRepo();
   final _connectivity = Connectivity();
-  final _uuid = const Uuid();
+  final _remoteSync = ClinicalRemoteSyncService();
 
   final _q = TextEditingController();
   int _mode = 0; // 0=Local, 1=Server
@@ -70,23 +62,7 @@ Future<void> _search(String query) async {
         return;
       }
 
-      final baseUrl = await _settingsRepo.getBaseUrl();
-      final api = ApiClient.create(baseUrl: baseUrl);
-
-      final resp = await api.request(
-        method: 'GET',
-        path: '/api/clinical/children/search?q=${Uri.encodeQueryComponent(query)}',
-      );
-
-      final data = resp.data;
-      final list = <Map<String, dynamic>>[];
-      if (data is List) {
-        for (final e in data) {
-          if (e is Map) {
-            list.add(e.cast<String, dynamic>());
-          }
-        }
-      }
+      final list = await _remoteSync.searchChildren(query);
 
       if (!mounted) return;
       setState(() {
@@ -104,161 +80,9 @@ Future<void> _importRemote(Map<String, dynamic> remote) async {
     final id = (remote['id'] ?? '').toString();
     if (id.isEmpty) return;
 
-    final baseUrl = await _settingsRepo.getBaseUrl();
-    final api = ApiClient.create(baseUrl: baseUrl);
-    final resp = await api.request(method: 'GET', path: '/api/clinical/children/$id/summary');
-    final m = (resp.data is Map) ? (resp.data as Map).cast<String, dynamic>() : null;
-    if (m == null) return;
-    // IMPORTANT: backend /summary returns a FLAT child object (not nested under `child`).
-    // It contains a nested `caregiver` object and arrays for `inDepthAssessments` and `visits`.
-    final child = m;
-    final caregiver = (m['caregiver'] is Map)
-        ? (m['caregiver'] as Map).cast<String, dynamic>()
-        : const <String, dynamic>{};
-
-    String normalizeSex(dynamic v) {
-      final s = (v ?? '').toString().trim().toUpperCase();
-      if (s.startsWith('F')) return 'FEMALE';
-      if (s.startsWith('M')) return 'MALE';
-      return 'UNKNOWN';
-    }
-
-    final remoteChildId = (child['id'] ?? id).toString();
-
-    // If this child already exists locally (synced before), UPDATE that local record instead of
-    // creating a duplicate local child.
-    ClinicalChild? existing = await _repo.findByRemoteChildId(remoteChildId);
-    if (existing == null) {
-      final u = (child['uniqueChildNumber'] ?? '').toString().trim();
-      if (u.isNotEmpty) {
-        existing = await _repo.findByUniqueChildNumber(u);
-      }
-    }
-
-    final localChildId = existing?.localChildId ?? _uuid.v4();
-
-DateTime? parseDt(dynamic v) {
-  if (v == null) return null;
-  final s = v.toString().trim();
-  if (s.isEmpty) return null;
-  return DateTime.tryParse(s);
-}
-
-    final c = existing ?? ClinicalChild()..localChildId = localChildId;
-
-    // Only set createdAt on first create.
-    c.createdAt = existing?.createdAt ?? DateTime.now();
-    c.updatedAt = DateTime.now();
-
-    c.firstName = (child['firstName'] ?? child['childFirstName'] ?? '').toString();
-    c.lastName = (child['lastName'] ?? child['childLastName'] ?? '').toString();
-    c.sex = normalizeSex(child['sex']);
-
-    final cwc = (child['cwcNumber'] ?? '').toString().trim();
-    c.cwcNumber = cwc.isEmpty ? null : cwc;
-
-    c.caregiverName = (caregiver['fullName'] ?? caregiver['caregiverName'] ?? '').toString();
-    c.caregiverContacts = (caregiver['contacts'] ?? caregiver['caregiverContacts'] ?? '').toString();
-
-    final vill = (child['village'] ?? '').toString().trim();
-    c.village = vill.isEmpty ? null : vill;
-
-    c.dateOfBirth = parseDt(child['dateOfBirth'] ?? child['dob'] ?? child['date_of_birth']);
-    c.enrollmentDate = parseDt(child['enrollmentDate'] ?? child['enrolledAt'] ?? child['createdAt']) ?? DateTime.now();
-
-    c.remoteChildId = remoteChildId;
-
-    final uniq = (child['uniqueChildNumber'] ?? '').toString().trim();
-    c.uniqueChildNumber = uniq.isEmpty ? null : uniq;
-
-    c.status = 'SYNCED';
-
-    await _repo.upsert(c);
-
-    // Import assessments + visits so the child detail screen is not blank.
-    // 1) In-depth assessments
-    final List<dynamic> ida = (m['inDepthAssessments'] is List)
-        ? (m['inDepthAssessments'] as List)
-        : (m['inDepthAssessment'] != null ? [m['inDepthAssessment']] : const []);
-
-    for (final rawA in ida) {
-      if (rawA is! Map) continue;
-      final a = rawA.cast<String, dynamic>();
-
-      final remoteAssessmentId = (a['id'] ?? '').toString().trim();
-      final existingA = remoteAssessmentId.isEmpty ? null : await _assessRepo.findByRemoteAssessmentId(remoteAssessmentId);
-
-      final assessmentDate = parseDt(a['assessmentDate'] ?? a['assessedAt'] ?? a['createdAt']) ?? DateTime.now();
-      final assessmentType = (a['assessmentType'] ?? '').toString().toUpperCase();
-      final encounterType = (assessmentType == 'DISCHARGE') ? 'DISCHARGE' : 'ENROLLMENT';
-
-      final data = <String, dynamic>{
-        'encounterType': encounterType,
-        'assessmentType': assessmentType,
-        'data': (a['data'] is Map) ? (a['data'] as Map).cast<String, dynamic>() : const <String, dynamic>{},
-      };
-
-      final ca = existingA ?? ClinicalAssessment()..localAssessmentId = _uuid.v4();
-      ca.localChildId = localChildId;
-      ca.assessmentDate = assessmentDate;
-      ca.dataJson = jsonEncode(data);
-      ca.muacMm = (a['muacMm'] is int) ? a['muacMm'] as int : int.tryParse('${a['muacMm']}');
-      ca.weightKg = (a['weightKg'] is num) ? (a['weightKg'] as num).toDouble() : double.tryParse('${a['weightKg']}');
-      ca.heightCm = (a['heightCm'] is num) ? (a['heightCm'] as num).toDouble() : double.tryParse('${a['heightCm']}');
-      ca.householdHungerScore = (a['householdHungerScore'] is int) ? a['householdHungerScore'] as int : int.tryParse('${a['householdHungerScore']}');
-      ca.householdHungerCategory = a['householdHungerCategory']?.toString();
-      ca.pssScore = (a['pssScore'] is int) ? a['pssScore'] as int : int.tryParse('${a['pssScore']}');
-      ca.pssCategory = a['pssCategory']?.toString();
-      ca.status = 'SYNCED';
-      ca.remoteAssessmentId = remoteAssessmentId.isEmpty ? ca.remoteAssessmentId : remoteAssessmentId;
-      ca.createdAt = existingA?.createdAt ?? DateTime.now();
-      ca.updatedAt = DateTime.now();
-
-      await _assessRepo.upsert(ca);
-    }
-
-    // 2) Visits as FOLLOWUP entries (for charts/history)
-    final rawVisits = (m['visits'] is List) ? (m['visits'] as List) : const [];
-    for (final rv in rawVisits) {
-      if (rv is! Map) continue;
-      final v = rv.cast<String, dynamic>();
-      final visitDate = parseDt(v['visitDate'] ?? v['date'] ?? v['createdAt']) ?? DateTime.now();
-
-      final visitRemoteIdRaw = (v['id'] ?? '').toString().trim();
-      final visitRemoteKey = visitRemoteIdRaw.isEmpty ? '' : 'visit:$visitRemoteIdRaw';
-      final existingV = visitRemoteKey.isEmpty ? null : await _assessRepo.findByRemoteAssessmentId(visitRemoteKey);
-
-      // Pick sachets from dispenses if present
-      int sachets = 0;
-      final disp = v['dispenses'];
-      if (disp is List) {
-        for (final d in disp.whereType<Map>()) {
-          final mD = d.cast<String, dynamic>();
-          final q = mD['quantitySachets'] ?? mD['sachetsGiven'] ?? mD['sachetsDispensed'];
-          sachets += (q is int) ? q : int.tryParse('$q') ?? 0;
-        }
-      }
-
-      final data = <String, dynamic>{
-        'encounterType': 'FOLLOWUP',
-        'visit': {
-          'visitDate': visitDate.toIso8601String(),
-          'quantitySachets': sachets,
-        },
-      };
-
-      final ca = existingV ?? ClinicalAssessment()..localAssessmentId = _uuid.v4();
-      ca.localChildId = localChildId;
-      ca.assessmentDate = visitDate;
-      ca.dataJson = jsonEncode(data);
-      ca.muacMm = (v['muacMm'] is int) ? v['muacMm'] as int : int.tryParse('${v['muacMm']}');
-      ca.weightKg = (v['weightKg'] is num) ? (v['weightKg'] as num).toDouble() : double.tryParse('${v['weightKg']}');
-      ca.heightCm = (v['heightCm'] is num) ? (v['heightCm'] as num).toDouble() : double.tryParse('${v['heightCm']}');
-      ca.status = 'SYNCED';
-      ca.remoteAssessmentId = visitRemoteKey.isEmpty ? ca.remoteAssessmentId : visitRemoteKey;
-      ca.createdAt = existingV?.createdAt ?? DateTime.now();
-      ca.updatedAt = DateTime.now();
-      await _assessRepo.upsert(ca);
+    final localChildId = await _remoteSync.importChildSummaryByRemoteId(id);
+    if (localChildId == null || localChildId.trim().isEmpty) {
+      throw Exception('Could not import child summary');
     }
 
     if (!mounted) return;
@@ -271,6 +95,7 @@ DateTime? parseDt(dynamic v) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Import failed: $e')));
   }
 }
+
 
 @override
   Widget build(BuildContext context) {

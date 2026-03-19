@@ -44,6 +44,53 @@ class BoxCacheRepo {
     });
   }
 
+  Future<void> upsertFromStoreSummary({
+    required List<Map<String, dynamic>> boxes,
+    required String facilityId,
+  }) async {
+    final normalized = boxes
+        .map((b) => b.map((k, v) => MapEntry(k.toString(), v)))
+        .where((b) => (b['boxUid'] ?? '').toString().trim().isNotEmpty)
+        .toList();
+    if (normalized.isEmpty) return;
+
+    final uids = normalized
+        .map((b) => (b['boxUid'] ?? '').toString().trim())
+        .where((u) => u.isNotEmpty)
+        .toSet()
+        .toList();
+
+    await _db.writeTxn(() async {
+      final existing = await _db.boxCaches
+          .filter()
+          .anyOf(uids, (q, uid) => q.boxUidEqualTo(uid))
+          .findAll();
+      final byUid = {for (final b in existing) b.boxUid: b};
+
+      final upserts = <BoxCache>[];
+      for (final row in normalized) {
+        final uid = (row['boxUid'] ?? '').toString().trim();
+        if (uid.isEmpty) continue;
+
+        final b = byUid[uid] ?? BoxCache()..boxUid = uid;
+        b.status = 'IN_FACILITY';
+        b.currentFacilityId = facilityId.trim().isEmpty ? null : facilityId.trim();
+
+        final batch = (row['batchNo'] ?? '').toString().trim();
+        b.batchNo = batch.isEmpty ? null : batch;
+
+        final expRaw = (row['expiryDate'] ?? '').toString().trim();
+        b.expiryDate = expRaw.isEmpty ? null : DateTime.tryParse(expRaw);
+        b.updatedAt = DateTime.now();
+        upserts.add(b);
+      }
+
+      if (upserts.isNotEmpty) {
+        await _db.boxCaches.putAll(upserts);
+      }
+    });
+  }
+
   /// Upsert minimal box records by UID (creates missing ones).
   ///
   /// Useful for receiving: we may only have QR scans (boxUid) and still want the
