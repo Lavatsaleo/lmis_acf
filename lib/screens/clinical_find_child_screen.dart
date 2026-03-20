@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-
 import '../data/local/clinical/clinical_child_repo.dart';
-import '../data/local/isar/clinical_child.dart';
+import '../data/local/settings/app_settings_repo.dart';
+import '../data/remote/api_client.dart';
 import '../data/remote/clinical_remote_sync_service.dart';
+import '../data/local/isar/clinical_child.dart';
 import 'clinical_child_detail_screen.dart';
 import '../widgets/acf_brand.dart';
 
@@ -16,6 +17,7 @@ class ClinicalFindChildScreen extends StatefulWidget {
 
 class _ClinicalFindChildScreenState extends State<ClinicalFindChildScreen> {
   final _repo = ClinicalChildRepo();
+  final _settingsRepo = AppSettingsRepo();
   final _connectivity = Connectivity();
   final _remoteSync = ClinicalRemoteSyncService();
 
@@ -62,7 +64,23 @@ Future<void> _search(String query) async {
         return;
       }
 
-      final list = await _remoteSync.searchChildren(query);
+      final baseUrl = await _settingsRepo.getBaseUrl();
+      final api = ApiClient.create(baseUrl: baseUrl);
+
+      final resp = await api.request(
+        method: 'GET',
+        path: '/api/clinical/children/search?q=${Uri.encodeQueryComponent(query)}',
+      );
+
+      final data = resp.data;
+      final list = <Map<String, dynamic>>[];
+      if (data is List) {
+        for (final e in data) {
+          if (e is Map) {
+            list.add(e.cast<String, dynamic>());
+          }
+        }
+      }
 
       if (!mounted) return;
       setState(() {
@@ -80,11 +98,7 @@ Future<void> _importRemote(Map<String, dynamic> remote) async {
     final id = (remote['id'] ?? '').toString();
     if (id.isEmpty) return;
 
-    final localChildId = await _remoteSync.importChildSummaryByRemoteId(id);
-    if (localChildId == null || localChildId.trim().isEmpty) {
-      throw Exception('Could not import child summary');
-    }
-
+    final localChildId = await _remoteSync.importChildByRemoteId(id);
     if (!mounted) return;
     Navigator.push(
       context,
@@ -95,7 +109,6 @@ Future<void> _importRemote(Map<String, dynamic> remote) async {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Import failed: $e')));
   }
 }
-
 
 @override
   Widget build(BuildContext context) {

@@ -9,6 +9,7 @@ import '../data/local/isar/clinical_assessment.dart';
 import '../data/local/isar/clinical_child.dart';
 import '../screens/clinical_in_depth_assessment_screen.dart';
 import '../screens/clinical_followup_visit_screen.dart';
+import '../screens/clinical_edit_child_screen.dart';
 import '../widgets/nutrition_snapshot_card.dart';
 import '../widgets/whz_growth_chart_card.dart';
 import '../widgets/acf_brand.dart';
@@ -58,8 +59,34 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
       return const Scaffold(body: Center(child: Text('Child not found')));
     }
 
+    final canEditSyncedChild = (child.remoteChildId ?? '').trim().isNotEmpty && child.status == 'SYNCED';
+
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Child details'),
+      appBar: AcfAppBar(
+        title: 'Child details',
+        actions: [
+          if (canEditSyncedChild)
+            IconButton(
+              tooltip: 'Edit child details',
+              onPressed: () async {
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ClinicalEditChildScreen(localChildId: child.localChildId),
+                  ),
+                );
+                if (result != null) {
+                  await _load();
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Child details updated.')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.edit_outlined),
+            ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -94,6 +121,31 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                   Text('Caregiver: ${child.caregiverName}', style: const TextStyle(fontWeight: FontWeight.w800)),
                   if ((child.caregiverContacts).isNotEmpty) Text('Contacts: ${child.caregiverContacts}'),
                   if ((child.village ?? '').isNotEmpty) Text('Village: ${child.village}'),
+                  if (canEditSyncedChild) ...[
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final result = await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ClinicalEditChildScreen(localChildId: child.localChildId),
+                            ),
+                          );
+                          if (result != null) {
+                            await _load();
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Child details updated.')),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.edit_outlined),
+                        label: const Text('Edit synced child details'),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
