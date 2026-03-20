@@ -25,14 +25,63 @@ class ClinicalRemoteSyncService {
         _settingsRepo = settingsRepo ?? AppSettingsRepo(),
         _uuid = uuid ?? const Uuid();
 
+  Future<ApiClient> _api() async {
+    final baseUrl = await _settingsRepo.getBaseUrl();
+    return ApiClient.create(baseUrl: baseUrl);
+  }
+
+  Future<List<Map<String, dynamic>>> searchChildren(String query) async {
+    final api = await _api();
+    final resp = await api.request(
+      method: 'GET',
+      path: '/api/clinical/children/search?q=${Uri.encodeQueryComponent(query)}',
+    );
+
+    final data = resp.data;
+    final list = <Map<String, dynamic>>[];
+    if (data is List) {
+      for (final e in data) {
+        if (e is Map) list.add(e.cast<String, dynamic>());
+      }
+    }
+    return list;
+  }
+
+  Future<List<Map<String, dynamic>>> fetchFacilityAppointments(DateTime date) async {
+    final api = await _api();
+    final resp = await api.request(
+      method: 'GET',
+      path: '/api/clinical/facility/appointments?date=${_fmtDate(date)}',
+    );
+
+    final data = _asMap(resp.data) ?? const <String, dynamic>{};
+    final rows = data['rows'];
+    if (rows is! List) return const [];
+    return rows.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> fetchRecentFacilityChildren({DateTime? date, int take = 50}) async {
+    final api = await _api();
+    final qs = <String>['take=$take'];
+    if (date != null) qs.add('date=${_fmtDate(date)}');
+    final resp = await api.request(
+      method: 'GET',
+      path: '/api/clinical/facility/children/recent?${qs.join('&')}',
+    );
+
+    final data = _asMap(resp.data) ?? const <String, dynamic>{};
+    final rows = data['rows'];
+    if (rows is! List) return const [];
+    return rows.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+  }
+
   Future<String> importChildByRemoteId(String remoteChildId) async {
     final id = remoteChildId.trim();
     if (id.isEmpty) {
       throw Exception('Remote child id is required.');
     }
 
-    final baseUrl = await _settingsRepo.getBaseUrl();
-    final api = ApiClient.create(baseUrl: baseUrl);
+    final api = await _api();
     final resp = await api.request(method: 'GET', path: '/api/clinical/children/$id/summary');
     final summary = _asMap(resp.data);
     if (summary == null) {
@@ -40,6 +89,12 @@ class ClinicalRemoteSyncService {
     }
 
     return importChildSummaryMap(summary);
+  }
+
+  Future<String?> importChildSummaryByRemoteId(String remoteChildId) async {
+    final id = remoteChildId.trim();
+    if (id.isEmpty) return null;
+    return importChildByRemoteId(id);
   }
 
   Future<String> updateRemoteChild({
@@ -51,8 +106,7 @@ class ClinicalRemoteSyncService {
       throw Exception('Remote child id is required.');
     }
 
-    final baseUrl = await _settingsRepo.getBaseUrl();
-    final api = ApiClient.create(baseUrl: baseUrl);
+    final api = await _api();
     final resp = await api.request(
       method: 'PATCH',
       path: '/api/clinical/children/$id',
@@ -212,7 +266,8 @@ class ClinicalRemoteSyncService {
         'visit': {
           'visitDate': visitDate.toIso8601String(),
           'quantitySachets': sachets,
-          'nextAppointmentDate': v['nextAppointmentDate'],
+          if (v['nextAppointmentDate'] != null) 'nextAppointmentDate': v['nextAppointmentDate'],
+          if ((v['notes'] ?? '').toString().trim().isNotEmpty) 'notes': v['notes'].toString(),
         },
       };
 
@@ -271,5 +326,12 @@ class ClinicalRemoteSyncService {
     if (v == null) return null;
     final s = v.toString().trim();
     return s.isEmpty ? null : s;
+  }
+
+  String _fmtDate(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y-$m-$day';
   }
 }

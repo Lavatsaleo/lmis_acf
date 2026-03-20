@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../data/local/auth/session_store.dart';
 import '../data/local/auth/token_store.dart';
-import '../data/local/settings/app_settings_repo.dart';
 import '../widgets/acf_brand.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -15,11 +14,9 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   final SessionStore _sessionStore = SessionStore();
   final TokenStore _tokenStore = const TokenStore();
-  final AppSettingsRepo _settingsRepo = AppSettingsRepo();
 
   bool _loading = true;
   Map<String, dynamic>? _me;
-  String _baseUrl = '';
 
   @override
   void initState() {
@@ -29,11 +26,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _load() async {
     final me = await _sessionStore.readUserJson();
-    final baseUrl = await _settingsRepo.getBaseUrl();
     if (!mounted) return;
     setState(() {
       _me = me;
-      _baseUrl = baseUrl;
       _loading = false;
     });
   }
@@ -80,7 +75,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  const AcfLogo(size: 44),
+                  const AcfLogo(size: 52),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
@@ -106,15 +101,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Backend', style: TextStyle(fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 6),
+                  const Text('App security', style: TextStyle(fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 8),
                   Text(
-                    _baseUrl,
-                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    'To change the backend URL, go to Login screen → Advanced settings.',
+                    'This mobile app now uses a fixed secured backend endpoint. Users cannot change the backend URL from inside the app.',
                     style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                   ),
                 ],
@@ -126,11 +116,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
             onPressed: _logout,
             icon: const Icon(Icons.logout),
             label: const Text('Logout'),
-          ),
-          const SizedBox(height: 14),
-          Text(
-            'Next: we will add “Register Boxes” against your existing Box table (no duplication), then add Warehouse Receive + Adjustment, and finally link to clinical dispensing + in-depth assessment.',
-            style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
           ),
         ],
       ),

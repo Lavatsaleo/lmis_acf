@@ -4,7 +4,8 @@ import '../../../core/config/app_config.dart';
 
 /// Lightweight storage for app-level settings.
 ///
-/// We keep this in SharedPreferences because it's small and not sensitive.
+/// The backend base URL is fixed in code for security, but we still keep cached
+/// facility store summary values here because they are small and device-local.
 class AppSettingsRepo {
   static const _kBaseUrl = 'settings.baseUrl';
   static const _kStoreSachetsPrefix = 'settings.storeSummary.totalSachets.';
@@ -12,15 +13,13 @@ class AppSettingsRepo {
   static const _kStoreUpdatedAtPrefix = 'settings.storeSummary.updatedAt.';
 
   Future<String> getBaseUrl() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_kBaseUrl) ?? AppConfig.defaultBaseUrl;
+    return AppConfig.defaultBaseUrl;
   }
 
   Future<void> setBaseUrl(String value) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kBaseUrl, value.trim());
+    await prefs.remove(_kBaseUrl);
   }
-
 
   String _storeSachetsKey(String facilityId) => '$_kStoreSachetsPrefix${facilityId.trim()}';
   String _storeBoxesKey(String facilityId) => '$_kStoreBoxesPrefix${facilityId.trim()}';
@@ -62,5 +61,4 @@ class AppSettingsRepo {
     if (raw == null || raw.trim().isEmpty) return null;
     return DateTime.tryParse(raw.trim());
   }
-
 }

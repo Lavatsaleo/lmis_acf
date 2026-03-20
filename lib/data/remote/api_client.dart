@@ -52,7 +52,6 @@ class ApiClient {
   }) async {
     final upper = method.trim().toUpperCase();
 
-    // Normalize JSON string payloads.
     dynamic body = data;
     if (data is String) {
       final raw = data.trim();
@@ -60,13 +59,14 @@ class ApiClient {
         try {
           body = jsonDecode(raw);
         } catch (_) {
-          // keep as string
           body = raw;
         }
       }
     }
 
+    final normalizedPath = path.startsWith('/') ? path.substring(1) : path;
+
     final opts = Options(method: upper, headers: headers);
-    return _dio.request<dynamic>(path, data: body, options: opts);
+    return _dio.request<dynamic>(normalizedPath, data: body, options: opts);
   }
 }
