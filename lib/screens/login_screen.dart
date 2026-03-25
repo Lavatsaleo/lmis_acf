@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../core/config/app_config.dart';
 import '../data/local/auth/session_store.dart';
 import '../data/local/auth/token_store.dart';
+import '../data/local/sync/sync_queue_repo.dart';
 import '../data/remote/api_client.dart';
 import '../data/remote/auth_api.dart';
 import '../widgets/acf_brand.dart';
@@ -21,6 +22,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final TokenStore _tokenStore = const TokenStore();
   final SessionStore _sessionStore = SessionStore();
+  final SyncQueueRepo _syncQueueRepo = SyncQueueRepo();
 
   final TextEditingController _emailCtrl = TextEditingController();
   final TextEditingController _passwordCtrl = TextEditingController();
@@ -53,20 +55,29 @@ class _LoginScreenState extends State<LoginScreen> {
       final auth = AuthApi(api);
 
       final loginRes = await auth.login(email: email, password: password);
-      if (loginRes.token.trim().isEmpty) {
-        throw Exception('Login did not return a token');
+
+      if (loginRes.accessToken.trim().isEmpty || loginRes.refreshToken.trim().isEmpty) {
+        throw Exception('Login did not return tokens');
       }
-      await _tokenStore.saveAccessToken(loginRes.token);
+
+      await _tokenStore.saveTokens(
+        accessToken: loginRes.accessToken,
+        refreshToken: loginRes.refreshToken,
+      );
 
       Map<String, dynamic> userJson = loginRes.user;
       try {
-        final me = await auth.fetchMe(accessToken: loginRes.token);
+        final me = await auth.fetchMe(accessToken: loginRes.accessToken);
         if (me.isNotEmpty) userJson = me;
       } catch (_) {
         // Keep the login payload if /api/me cannot be reached immediately.
       }
 
       await _sessionStore.saveUserJson(userJson);
+
+      // Important: after a successful login, reset queue retry windows
+      // so previously failed/pending items can sync immediately.
+      await _syncQueueRepo.resetRetryWindowsForAllPendingAndFailed();
 
       if (!mounted) return;
       Navigator.pushReplacementNamed(context, '/home');
@@ -141,7 +152,11 @@ class _LoginScreenState extends State<LoginScreen> {
                           const SizedBox(height: 4),
                           Text(
                             'LMIS and Clinical Mobile App',
-                            style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant, fontWeight: FontWeight.w600),
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: cs.onSurfaceVariant,
+                              fontWeight: FontWeight.w600,
+                            ),
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 8),
@@ -163,7 +178,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         children: [
                           Text(
                             'Credentials',
-                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: cs.onSurface),
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              color: cs.onSurface,
+                            ),
                           ),
                           const SizedBox(height: 12),
                           TextFormField(
@@ -183,8 +202,12 @@ class _LoginScreenState extends State<LoginScreen> {
                               prefixIcon: const Icon(Icons.lock_outline),
                               suffixIcon: IconButton(
                                 tooltip: _hidePassword ? 'Show password' : 'Hide password',
-                                onPressed: _loggingIn ? null : () => setState(() => _hidePassword = !_hidePassword),
-                                icon: Icon(_hidePassword ? Icons.visibility : Icons.visibility_off),
+                                onPressed: _loggingIn
+                                    ? null
+                                    : () => setState(() => _hidePassword = !_hidePassword),
+                                icon: Icon(
+                                  _hidePassword ? Icons.visibility : Icons.visibility_off,
+                                ),
                               ),
                             ),
                             obscureText: _hidePassword,
@@ -204,7 +227,10 @@ class _LoginScreenState extends State<LoginScreen> {
                                 Expanded(
                                   child: Text(
                                     'Powered By AAHDMS',
-                                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: cs.onSurfaceVariant,
+                                    ),
                                   ),
                                 ),
                               ],

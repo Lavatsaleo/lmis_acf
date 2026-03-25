@@ -200,9 +200,32 @@ class SyncQueueRepo {
   Future<void> retryAllFailed() async {
     final failed = await _isar.syncQueueItems.filter().statusEqualTo(SyncStatus.failed).findAll();
     if (failed.isEmpty) return;
+
     await _isar.writeTxn(() async {
       for (final item in failed) {
         item.status = SyncStatus.pending;
+        item.attempts = 0;
+        item.lastAttemptAt = null;
+        item.lastError = null;
+        await _isar.syncQueueItems.put(item);
+      }
+    });
+  }
+
+  Future<void> resetRetryWindowsForAllPendingAndFailed() async {
+    final pending = await _isar.syncQueueItems.filter().statusEqualTo(SyncStatus.pending).findAll();
+    final failed = await _isar.syncQueueItems.filter().statusEqualTo(SyncStatus.failed).findAll();
+
+    await _isar.writeTxn(() async {
+      for (final item in [...pending, ...failed]) {
+        item.attempts = 0;
+        item.lastAttemptAt = null;
+        item.lastError = null;
+
+        if (item.status == SyncStatus.failed) {
+          item.status = SyncStatus.pending;
+        }
+
         await _isar.syncQueueItems.put(item);
       }
     });
