@@ -74,13 +74,35 @@ class SyncService {
     return DateTime.now().isAfter(item.lastAttemptAt!.add(wait));
   }
 
+  Future<bool> _dependencyIsReady(SyncQueueItem item) async {
+    final dep = item.dependsOnLocalEntityId?.trim();
+    if (dep == null || dep.isEmpty) return true;
+
+    // Case 1: dependency was created locally and already synced through queue
+    final queuedDepSynced = await _queueRepo.isLocalEntitySynced(dep);
+    if (queuedDepSynced) return true;
+
+    // Case 2: dependency is a child that already exists on the server
+    // and was downloaded/imported locally, so it has a remoteChildId.
+    final child = await _childRepo.findByLocalId(dep);
+    final remoteChildId = child?.remoteChildId?.trim();
+    if (remoteChildId != null && remoteChildId.isNotEmpty) return true;
+
+    return false;
+  }
+
   /// Sync queued items now.
   ///
   /// Returns counts for UI.
   Future<SyncRunResult> syncNow({int limit = 25}) async {
     final online = await isOnline();
     if (!online) {
-      return const SyncRunResult(attempted: 0, sent: 0, failed: 0, online: false);
+      return const SyncRunResult(
+        attempted: 0,
+        sent: 0,
+        failed: 0,
+        online: false,
+      );
     }
 
     final baseUrl = await _settingsRepo.getBaseUrl();
@@ -98,10 +120,9 @@ class SyncService {
       // Respect backoff window.
       if (!_canAttemptNow(item)) continue;
 
-      // Dependency check (simple): do not send if dependency localEntityId is not yet SENT.
-      if (item.dependsOnLocalEntityId != null && item.dependsOnLocalEntityId!.trim().isNotEmpty) {
-        final ok = await _queueRepo.isLocalEntitySynced(item.dependsOnLocalEntityId!.trim());
-        if (!ok) continue;
+      // Do not send if the dependency is not yet ready.
+      if (!await _dependencyIsReady(item)) {
+        continue;
       }
 
       attempted += 1;
@@ -110,9 +131,9 @@ class SyncService {
       try {
         final path = await _resolveEndpoint(item);
         final headers = <String, dynamic>{
-          // Useful for server-side dedupe and debugging.
           'X-Queue-Id': item.queueId,
-          if (item.idempotencyKey != null && item.idempotencyKey!.trim().isNotEmpty)
+          if (item.idempotencyKey != null &&
+              item.idempotencyKey!.trim().isNotEmpty)
             'X-Idempotency-Key': item.idempotencyKey!.trim(),
         };
 
@@ -127,7 +148,6 @@ class SyncService {
         final responseJson = _safeStringify(resp.data);
 
         if (statusCode >= 200 && statusCode < 300) {
-          // Apply side effects to local store (eg. map local IDs to server IDs).
           await _applySuccessSideEffects(item, resp.data);
 
           sent += 1;
@@ -147,14 +167,25 @@ class SyncService {
       } catch (e) {
         failed += 1;
         await _maybeRefreshStoreSummaryAfterError(api, e);
-        await _queueRepo.markAsFailed(queueId: item.queueId, error: e.toString());
+        await _queueRepo.markAsFailed(
+          queueId: item.queueId,
+          error: e.toString(),
+        );
       }
     }
 
-    return SyncRunResult(attempted: attempted, sent: sent, failed: failed, online: true);
+    return SyncRunResult(
+      attempted: attempted,
+      sent: sent,
+      failed: failed,
+      online: true,
+    );
   }
 
-  Future<void> _maybeRefreshStoreSummaryAfterError(ApiClient api, Object error) async {
+  Future<void> _maybeRefreshStoreSummaryAfterError(
+    ApiClient api,
+    Object error,
+  ) async {
     final text = error.toString();
     if (!text.contains('409')) return;
     try {
@@ -164,13 +195,19 @@ class SyncService {
     }
   }
 
-  Future<void> _refreshFacilityStoreSummaryCache(ApiClient api, {SyncQueueItem? item}) async {
+  Future<void> _refreshFacilityStoreSummaryCache(
+    ApiClient api, {
+    SyncQueueItem? item,
+  }) async {
     try {
       final me = await _sessionStore.readUserJson();
       final facilityId = (me?['facilityId'] ?? '').toString().trim();
       if (facilityId.isEmpty) return;
 
-      final resp = await api.request(method: 'GET', path: AppConfig.facilityStoreSummaryPath);
+      final resp = await api.request(
+        method: 'GET',
+        path: AppConfig.facilityStoreSummaryPath,
+      );
       final data = resp.data;
       if (data is! Map) return;
 
@@ -183,26 +220,37 @@ class SyncService {
         }
       }
 
-      final totalSachetsRemaining =
-          (m['totalSachetsRemaining'] is num) ? (m['totalSachetsRemaining'] as num).round() : 0;
-      final boxesInStore = (m['boxesInStore'] is num) ? (m['boxesInStore'] as num).round() : boxes.length;
+      final totalSachetsRemaining = (m['totalSachetsRemaining'] is num)
+          ? (m['totalSachetsRemaining'] as num).round()
+          : 0;
+      final boxesInStore = (m['boxesInStore'] is num)
+          ? (m['boxesInStore'] as num).round()
+          : boxes.length;
 
       await _settingsRepo.cacheFacilityStoreSummary(
         facilityId: facilityId,
         totalSachetsRemaining: totalSachetsRemaining,
         boxesInStore: boxesInStore,
       );
-      await _boxRepo.upsertFromStoreSummary(boxes: boxes, facilityId: facilityId);
+      await _boxRepo.upsertFromStoreSummary(
+        boxes: boxes,
+        facilityId: facilityId,
+      );
     } catch (_) {
       // Do not fail sync because store refresh failed.
     }
   }
 
-  Future<void> _applySuccessSideEffects(SyncQueueItem item, dynamic responseData) async {
+  Future<void> _applySuccessSideEffects(
+    SyncQueueItem item,
+    dynamic responseData,
+  ) async {
     // Handle receive transactions (update local store cache).
     if (item.entityType == 'receive') {
       try {
-        final payload = item.payloadJson == null ? null : jsonDecode(item.payloadJson!);
+        final payload = item.payloadJson == null
+            ? null
+            : jsonDecode(item.payloadJson!);
         if (payload is Map) {
           final boxUidsRaw = payload['boxUids'];
           final toFacilityId = payload['toFacilityId']?.toString();
@@ -211,7 +259,10 @@ class SyncService {
             await _boxRepo.upsertMinimalMany(
               boxUids: boxUids,
               status: 'IN_FACILITY',
-              currentFacilityId: (toFacilityId != null && toFacilityId.trim().isNotEmpty) ? toFacilityId.trim() : null,
+              currentFacilityId:
+                  (toFacilityId != null && toFacilityId.trim().isNotEmpty)
+                  ? toFacilityId.trim()
+                  : null,
             );
           }
         }
@@ -221,8 +272,9 @@ class SyncService {
       return;
     }
 
-    // Only handle clinical entity types we know about.
-    if (item.entityType != 'clinical_enroll' && item.entityType != 'clinical_followup' && item.entityType != 'clinical_discharge') {
+    if (item.entityType != 'clinical_enroll' &&
+        item.entityType != 'clinical_followup' &&
+        item.entityType != 'clinical_discharge') {
       return;
     }
 
@@ -240,14 +292,20 @@ class SyncService {
 
     // --- ENROLLMENT: map local child -> remote child and mark enrollment assessment synced ---
     if (item.entityType == 'clinical_enroll') {
-      final childJson = (m['child'] is Map) ? (m['child'] as Map).cast<String, dynamic>() : null;
-      final assessmentJson = (m['assessment'] is Map) ? (m['assessment'] as Map).cast<String, dynamic>() : null;
+      final childJson = (m['child'] is Map)
+          ? (m['child'] as Map).cast<String, dynamic>()
+          : null;
+      final assessmentJson = (m['assessment'] is Map)
+          ? (m['assessment'] as Map).cast<String, dynamic>()
+          : null;
 
       if (childJson != null) {
         final local = await _childRepo.findByLocalId(item.localEntityId);
         if (local != null) {
           local.remoteChildId = childJson['id']?.toString();
-          local.uniqueChildNumber = childJson['uniqueChildNumber']?.toString() ?? local.uniqueChildNumber;
+          local.uniqueChildNumber =
+              childJson['uniqueChildNumber']?.toString() ??
+              local.uniqueChildNumber;
           local.status = 'SYNCED';
           await _childRepo.upsert(local);
         }
@@ -272,10 +330,13 @@ class SyncService {
 
     // --- FOLLOW-UP VISIT: map local follow-up record -> remote ChildVisit id ---
     if (item.entityType == 'clinical_followup') {
-      final visitJson = (m['visit'] is Map) ? (m['visit'] as Map).cast<String, dynamic>() : null;
+      final visitJson = (m['visit'] is Map)
+          ? (m['visit'] as Map).cast<String, dynamic>()
+          : null;
       final local = await _assessRepo.findByLocalAssessmentId(item.localEntityId);
       if (local != null) {
-        local.remoteAssessmentId = visitJson?['id']?.toString() ?? local.remoteAssessmentId;
+        local.remoteAssessmentId =
+            visitJson?['id']?.toString() ?? local.remoteAssessmentId;
         local.status = 'SYNCED';
         await _assessRepo.upsert(local);
       }
@@ -284,10 +345,13 @@ class SyncService {
 
     // --- DISCHARGE ASSESSMENT: map local discharge -> remote InDepthAssessment id ---
     if (item.entityType == 'clinical_discharge') {
-      final assessmentJson = (m['assessment'] is Map) ? (m['assessment'] as Map).cast<String, dynamic>() : null;
+      final assessmentJson = (m['assessment'] is Map)
+          ? (m['assessment'] as Map).cast<String, dynamic>()
+          : null;
       final local = await _assessRepo.findByLocalAssessmentId(item.localEntityId);
       if (local != null) {
-        local.remoteAssessmentId = assessmentJson?['id']?.toString() ?? local.remoteAssessmentId;
+        local.remoteAssessmentId =
+            assessmentJson?['id']?.toString() ?? local.remoteAssessmentId;
         local.status = 'SYNCED';
         if (AppConfig.purgeSensitiveAfterSync) {
           local.dataJson = _purgeAssessmentJson(local.dataJson);
@@ -305,42 +369,44 @@ class SyncService {
     // For follow-up/discharge we always set dependsOnLocalEntityId = localChildId.
     String? localChildId = item.dependsOnLocalEntityId;
     if (localChildId == null || localChildId.trim().isEmpty) {
-      // Fallback: try pull from payload.
       try {
         final p = item.payloadJson == null ? null : jsonDecode(item.payloadJson!);
-        if (p is Map && p['localChildId'] != null) localChildId = p['localChildId'].toString();
+        if (p is Map && p['localChildId'] != null) {
+          localChildId = p['localChildId'].toString();
+        }
       } catch (_) {
         // ignore
       }
     }
 
-    if (localChildId == null || localChildId.trim().isEmpty) return item.endpoint;
+    if (localChildId == null || localChildId.trim().isEmpty) {
+      return item.endpoint;
+    }
+
     final child = await _childRepo.findByLocalId(localChildId.trim());
     final remote = child?.remoteChildId;
     if (remote == null || remote.trim().isEmpty) return item.endpoint;
+
     return item.endpoint.replaceAll('{childId}', remote.trim());
   }
 
-
-
-String _purgeAssessmentJson(String raw) {
-  try {
-    final m = (jsonDecode(raw) as Map).cast<String, dynamic>();
-    final minimal = <String, dynamic>{
-      '_purged': true,
-      'encounterType': m['encounterType'],
-      // Keep only what we need for growth trends + classification + appointments.
-      'anthropometry': m['anthropometry'],
-      'visit': m['visit'],
-      'exit': m['exit'],
-      'derived': m['derived'],
-    };
-    return jsonEncode(minimal);
-  } catch (_) {
-    // If parsing fails, fallback to an empty safe payload.
-    return jsonEncode({'_purged': true});
+  String _purgeAssessmentJson(String raw) {
+    try {
+      final m = (jsonDecode(raw) as Map).cast<String, dynamic>();
+      final minimal = <String, dynamic>{
+        '_purged': true,
+        'encounterType': m['encounterType'],
+        'anthropometry': m['anthropometry'],
+        'visit': m['visit'],
+        'exit': m['exit'],
+        'derived': m['derived'],
+      };
+      return jsonEncode(minimal);
+    } catch (_) {
+      return jsonEncode({'_purged': true});
+    }
   }
-}
+
   String _safeStringify(dynamic data) {
     if (data == null) return '';
     if (data is String) return data;
