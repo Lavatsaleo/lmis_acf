@@ -8,6 +8,7 @@ import '../data/local/sync/sync_queue_repo.dart';
 import '../data/remote/api_client.dart';
 import '../data/remote/auth_api.dart';
 import '../widgets/acf_brand.dart';
+import '../widgets/app_version_badge.dart';
 
 /// Sign in screen.
 ///
@@ -30,6 +31,51 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loggingIn = false;
   bool _hidePassword = true;
 
+  String _valueFrom(Map<String, dynamic>? json, List<String> keys) {
+    if (json == null) return '';
+    for (final key in keys) {
+      final value = json[key];
+      if (value != null && value.toString().trim().isNotEmpty) {
+        return value.toString().trim();
+      }
+    }
+    return '';
+  }
+
+  bool _sameUserAndFacility(
+    Map<String, dynamic>? currentUser,
+    Map<String, dynamic> newUser,
+  ) {
+    if (currentUser == null || currentUser.isEmpty) return true;
+
+    final currentUserId = _valueFrom(currentUser, ['id', 'userId']);
+    final newUserId = _valueFrom(newUser, ['id', 'userId']);
+
+    final currentEmail = _valueFrom(currentUser, ['email']).toLowerCase();
+    final newEmail = _valueFrom(newUser, ['email']).toLowerCase();
+
+    final currentFacility = _valueFrom(currentUser, [
+      'facilityId',
+      'facilityCode',
+      'facilityName',
+    ]).toLowerCase();
+    final newFacility = _valueFrom(newUser, [
+      'facilityId',
+      'facilityCode',
+      'facilityName',
+    ]).toLowerCase();
+
+    final sameUser = currentUserId.isNotEmpty && newUserId.isNotEmpty
+        ? currentUserId == newUserId
+        : currentEmail.isNotEmpty && newEmail.isNotEmpty && currentEmail == newEmail;
+
+    final sameFacility = currentFacility.isEmpty ||
+        newFacility.isEmpty ||
+        currentFacility == newFacility;
+
+    return sameUser && sameFacility;
+  }
+
   Future<void> _login() async {
     if (_loggingIn) return;
 
@@ -48,8 +94,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _loggingIn = true);
     try {
-      await _tokenStore.clear();
-      await _sessionStore.clear();
+      final existingUser = await _sessionStore.readUserJson();
+      final queueCounts = await _syncQueueRepo.counts();
+      final hasUnsentData = queueCounts.pending > 0 || queueCounts.failed > 0;
 
       final api = ApiClient.create(baseUrl: baseUrl);
       final auth = AuthApi(api);
@@ -60,11 +107,6 @@ class _LoginScreenState extends State<LoginScreen> {
         throw Exception('Login did not return tokens');
       }
 
-      await _tokenStore.saveTokens(
-        accessToken: loginRes.accessToken,
-        refreshToken: loginRes.refreshToken,
-      );
-
       Map<String, dynamic> userJson = loginRes.user;
       try {
         final me = await auth.fetchMe(accessToken: loginRes.accessToken);
@@ -73,6 +115,23 @@ class _LoginScreenState extends State<LoginScreen> {
         // Keep the login payload if /api/me cannot be reached immediately.
       }
 
+      // Safety guard for shared phones:
+      // If there is unsynced local data, do not allow the phone to switch to a
+      // different user/facility. Otherwise offline records may sync under the
+      // wrong account/facility.
+      if (hasUnsentData && !_sameUserAndFacility(existingUser, userJson)) {
+        if (!mounted) return;
+        _show(
+          'This phone has ${queueCounts.pending + queueCounts.failed} unsynced item(s). '
+          'Please login with the same facility account and sync first before switching accounts.',
+        );
+        return;
+      }
+
+      await _tokenStore.saveTokens(
+        accessToken: loginRes.accessToken,
+        refreshToken: loginRes.refreshToken,
+      );
       await _sessionStore.saveUserJson(userJson);
 
       // Important: after a successful login, reset queue retry windows
@@ -105,6 +164,17 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _clearSession() async {
+    final queueCounts = await _syncQueueRepo.counts();
+    final hasUnsentData = queueCounts.pending > 0 || queueCounts.failed > 0;
+
+    if (hasUnsentData) {
+      if (!mounted) return;
+      _show(
+        'Cannot clear session. This phone has ${queueCounts.pending + queueCounts.failed} unsynced item(s). Sync first.',
+      );
+      return;
+    }
+
     await _tokenStore.clear();
     await _sessionStore.clear();
     if (!mounted) return;
@@ -159,6 +229,8 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                             textAlign: TextAlign.center,
                           ),
+                          const SizedBox(height: 6),
+                          const AppVersionBadge(),
                           const SizedBox(height: 8),
                           Text(
                             'Sign in to continue.',
