@@ -36,8 +36,8 @@ class _QueueInspectorScreenState extends State<QueueInspectorScreen> {
       if (!mounted) return;
 
       final msg = result.online
-          ? 'Sync done: sent ${result.sent}, failed ${result.failed} (attempted ${result.attempted})'
-          : 'Offline: nothing to sync';
+          ? 'Sync & refresh done: sent ${result.sent}, failed ${result.failed} (attempted ${result.attempted})'
+          : 'Offline: nothing to sync or refresh';
 
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } finally {
@@ -52,11 +52,11 @@ class _QueueInspectorScreenState extends State<QueueInspectorScreen> {
         title: 'Sync Queue',
         actions: [
           IconButton(
-            tooltip: 'Sync now',
+            tooltip: 'Sync & refresh now',
             onPressed: _syncing ? null : _syncNow,
             icon: _syncing
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.cloud_upload_outlined),
+                : const Icon(Icons.sync_outlined),
           ),
           IconButton(
             tooltip: 'Retry failed',

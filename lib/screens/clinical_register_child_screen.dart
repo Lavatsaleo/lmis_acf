@@ -12,7 +12,7 @@ import '../data/local/clinical/clinical_child_repo.dart';
 import '../data/local/isar/clinical_child.dart';
 import 'clinical_child_detail_screen.dart';
 import 'clinical_find_child_screen.dart';
-import 'clinical_in_depth_assessment_screen.dart';
+import 'clinical_enrollment_visit_screen.dart';
 import '../widgets/acf_brand.dart';
 
 class ClinicalRegisterChildScreen extends StatefulWidget {
@@ -113,7 +113,7 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
     return months;
   }
 
-  Future<void> _continueToAssessment() async {
+  Future<void> _continueToEnrollmentVisit() async {
     if (_saving) return;
     if (!(_formKey.currentState?.validate() ?? false)) return;
     if (_dob == null) {
@@ -177,7 +177,7 @@ if (cwc.isNotEmpty) {
 
       final resp = await api.request(
         method: 'GET',
-        path: '/api/clinical/children/search?q=\${Uri.encodeQueryComponent(cwc)}',
+        path: '/api/clinical/children/search?q=${Uri.encodeQueryComponent(cwc)}',
       );
 
       if ((resp.statusCode ?? 0) >= 200 && (resp.statusCode ?? 0) < 300) {
@@ -196,7 +196,7 @@ if (cwc.isNotEmpty) {
               context: context,
               builder: (_) => AlertDialog(
                 title: const Text('Possible duplicate'),
-                content: Text('A child with CWC number "\$cwc" already exists on the server.\n\nUse Search to open the existing record instead of registering again.'),
+                content: Text('A child with CWC number "$cwc" already exists on the server.\n\nUse Search to open the existing record instead of registering again.'),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(context),
@@ -252,11 +252,11 @@ setState(() => _saving = true);
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => ClinicalInDepthAssessmentScreen(
+          builder: (_) => ClinicalEnrollmentVisitScreen(
             localChildId: localChildId,
             draftEnrollmentJson: jsonEncode(_buildEnrollPayload(child)),
             onFinalizeQueued: () async {
-              // Mark as queued once the assessment screen has queued the enrollment.
+              // Mark as queued once the enrollment visit has queued the enrollment.
               child.status = 'QUEUED';
               await _childRepo.upsert(child);
             },
@@ -268,7 +268,7 @@ setState(() => _saving = true);
     }
   }
 
-  /// Base payload. Assessment screen will add `inDepthAssessment` and queue the whole enrollment.
+  /// Base enrollment payload. The next screen adds the simple enrollment visit and queues the enrollment.
   Map<String, dynamic> _buildEnrollPayload(ClinicalChild c) {
     String fmt(DateTime d) {
       final y = d.year.toString().padLeft(4, '0');
@@ -421,15 +421,15 @@ setState(() => _saving = true);
 
               const SizedBox(height: 20),
               ElevatedButton.icon(
-                onPressed: _saving ? null : _continueToAssessment,
+                onPressed: _saving ? null : _continueToEnrollmentVisit,
                 icon: _saving
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.arrow_forward),
-                label: const Text('Continue to in-depth assessment'),
+                label: const Text('Continue to anthropometry & dispensing'),
               ),
               const SizedBox(height: 8),
               Text(
-                'Note: We save locally first. You will queue the enrollment for sync after completing the assessment.',
+                'Note: We save locally first. The next screen captures only anthropometry and dispensing, then the app syncs automatically when online.',
                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),

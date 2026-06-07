@@ -197,6 +197,31 @@ class SyncQueueRepo {
     });
   }
 
+
+
+  /// If the app is killed while an item is marked SENDING, it can remain stuck.
+  /// This moves old SENDING records back to PENDING so automatic/manual sync can retry them.
+  Future<void> recoverStaleSendingItems({Duration maxAge = const Duration(minutes: 10)}) async {
+    final sending = await _isar.syncQueueItems.filter().statusEqualTo(SyncStatus.sending).findAll();
+    if (sending.isEmpty) return;
+
+    final cutoff = DateTime.now().subtract(maxAge);
+    final stale = sending.where((item) {
+      final lastAttempt = item.lastAttemptAt;
+      return lastAttempt == null || lastAttempt.isBefore(cutoff);
+    }).toList();
+
+    if (stale.isEmpty) return;
+
+    await _isar.writeTxn(() async {
+      for (final item in stale) {
+        item.status = SyncStatus.pending;
+        item.lastError = 'Recovered from stale sending state; will retry automatically.';
+        await _isar.syncQueueItems.put(item);
+      }
+    });
+  }
+
   Future<void> retryAllFailed() async {
     final failed = await _isar.syncQueueItems.filter().statusEqualTo(SyncStatus.failed).findAll();
     if (failed.isEmpty) return;

@@ -139,8 +139,17 @@ class ApiClient {
 
       _refreshCompleter!.complete(newAccessToken);
       return _refreshCompleter!.future;
+    } on DioException catch (e) {
+      // Only clear saved tokens when the refresh token is truly invalid.
+      // Do NOT clear tokens for temporary network/server problems, otherwise a
+      // field device can lose its session while it still has unsynced queue data.
+      final statusCode = e.response?.statusCode;
+      if (statusCode == 401 || statusCode == 403) {
+        await _store.clear();
+      }
+      _refreshCompleter!.complete(null);
+      return _refreshCompleter!.future;
     } catch (_) {
-      await _store.clear();
       _refreshCompleter!.complete(null);
       return _refreshCompleter!.future;
     } finally {

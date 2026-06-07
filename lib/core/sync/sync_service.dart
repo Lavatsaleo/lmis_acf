@@ -1,7 +1,9 @@
 import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:dio/dio.dart';
 
+import 'pull_refresh_service.dart';
 import '../../data/local/settings/app_settings_repo.dart';
 import '../../data/local/sync/sync_queue_repo.dart';
 import '../../data/local/isar/sync_queue_item.dart';
@@ -38,6 +40,7 @@ class SyncService {
   final ClinicalAssessmentRepo _assessRepo;
   final BoxCacheRepo _boxRepo;
   final SessionStore _sessionStore;
+  final PullRefreshService _pullRefreshService;
 
   SyncService({
     SyncQueueRepo? queueRepo,
@@ -47,13 +50,15 @@ class SyncService {
     ClinicalAssessmentRepo? assessRepo,
     BoxCacheRepo? boxRepo,
     SessionStore? sessionStore,
+    PullRefreshService? pullRefreshService,
   })  : _queueRepo = queueRepo ?? SyncQueueRepo(),
         _settingsRepo = settingsRepo ?? AppSettingsRepo(),
         _connectivity = connectivity ?? Connectivity(),
         _childRepo = childRepo ?? ClinicalChildRepo(),
         _assessRepo = assessRepo ?? ClinicalAssessmentRepo(),
         _boxRepo = boxRepo ?? BoxCacheRepo(),
-        _sessionStore = sessionStore ?? SessionStore();
+        _sessionStore = sessionStore ?? SessionStore(),
+        _pullRefreshService = pullRefreshService ?? PullRefreshService();
 
   Future<bool> isOnline() async {
     final results = await _connectivity.checkConnectivity();
@@ -94,7 +99,11 @@ class SyncService {
   /// Sync queued items now.
   ///
   /// Returns counts for UI.
-  Future<SyncRunResult> syncNow({int limit = 25}) async {
+  Future<SyncRunResult> syncNow({
+    int limit = 25,
+    bool ignoreBackoff = true,
+    bool pullAfterPush = true,
+  }) async {
     final online = await isOnline();
     if (!online) {
       return const SyncRunResult(
@@ -105,6 +114,10 @@ class SyncService {
       );
     }
 
+    // Recover items that may have been left in SENDING if the app was closed
+    // or crashed during a previous sync attempt.
+    await _queueRepo.recoverStaleSendingItems();
+
     final baseUrl = await _settingsRepo.getBaseUrl();
     final api = ApiClient.create(baseUrl: baseUrl);
 
@@ -114,11 +127,10 @@ class SyncService {
     int failed = 0;
 
     for (final item in items) {
-      // Hard stop: too many attempts.
-      if (item.attempts >= AppConfig.maxSyncAttempts) continue;
-
-      // Respect backoff window.
-      if (!_canAttemptNow(item)) continue;
+      // Respect backoff window only for background/automatic sync calls.
+      // Manual/user-triggered sync uses ignoreBackoff=true so failed items never get
+      // stuck behind long retry windows.
+      if (!ignoreBackoff && !_canAttemptNow(item)) continue;
 
       // Do not send if the dependency is not yet ready.
       if (!await _dependencyIsReady(item)) {
@@ -164,6 +176,33 @@ class SyncService {
             error: 'HTTP $statusCode: ${_truncate(responseJson, 600)}',
           );
         }
+      } on DioException catch (e) {
+        final statusCode = e.response?.statusCode ?? 0;
+        final responseJson = _safeStringify(e.response?.data);
+
+        // Important offline/idempotency fix:
+        // Sometimes the server successfully saves a record but the phone loses the
+        // response. On retry, the backend may return 409 duplicate. For clinical
+        // enrollments/follow-ups, a duplicate with the existing server record means
+        // the local item can safely be considered synced instead of being stuck forever.
+        if (_shouldTreatHttpErrorAsAlreadySynced(item, e)) {
+          await _applySuccessSideEffects(item, e.response?.data);
+          sent += 1;
+          await _queueRepo.markAsSent(
+            queueId: item.queueId,
+            httpStatus: statusCode,
+            responseJson: responseJson,
+          );
+          await _refreshFacilityStoreSummaryCache(api, item: item);
+          continue;
+        }
+
+        failed += 1;
+        await _maybeRefreshStoreSummaryAfterError(api, e);
+        await _queueRepo.markAsFailed(
+          queueId: item.queueId,
+          error: _friendlySyncError(e),
+        );
       } catch (e) {
         failed += 1;
         await _maybeRefreshStoreSummaryAfterError(api, e);
@@ -174,11 +213,31 @@ class SyncService {
       }
     }
 
+    if (pullAfterPush) {
+      try {
+        // Two-way sync: after pushing local queue items, pull latest server-confirmed
+        // stock and recent facility clinical records so other devices' updates appear locally.
+        await _pullRefreshService.refreshFromServer();
+      } catch (_) {
+        // Pull refresh must never make a successful push look failed.
+      }
+    }
+
     return SyncRunResult(
       attempted: attempted,
       sent: sent,
       failed: failed,
       online: true,
+    );
+  }
+
+  Future<PullRefreshResult> pullLatestFromServer({
+    int recentChildrenTake = 200,
+    bool includeAppointments = true,
+  }) {
+    return _pullRefreshService.refreshFromServer(
+      recentChildrenTake: recentChildrenTake,
+      includeAppointments: includeAppointments,
     );
   }
 
@@ -192,6 +251,67 @@ class SyncService {
       await _refreshFacilityStoreSummaryCache(api);
     } catch (_) {
       // ignore secondary refresh errors
+    }
+  }
+
+
+  bool _shouldTreatHttpErrorAsAlreadySynced(
+    SyncQueueItem item,
+    DioException error,
+  ) {
+    final statusCode = error.response?.statusCode ?? 0;
+    if (statusCode != 409) return false;
+
+    final data = error.response?.data;
+    Map<String, dynamic>? m;
+    if (data is Map) {
+      m = data.cast<String, dynamic>();
+    } else if (data is String && data.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is Map) m = decoded.cast<String, dynamic>();
+      } catch (_) {
+        m = null;
+      }
+    }
+    if (m == null) return false;
+
+    if (item.entityType == 'clinical_enroll') {
+      return m['child'] is Map;
+    }
+
+    if (item.entityType == 'clinical_followup') {
+      return m['existingVisit'] is Map || m['visit'] is Map;
+    }
+
+    return false;
+  }
+
+  String _friendlySyncError(DioException error) {
+    final statusCode = error.response?.statusCode;
+    final dataText = _truncate(_safeStringify(error.response?.data), 600);
+
+    if (statusCode == 401) {
+      return 'LOGIN_REQUIRED: Your session expired. Log in again, then tap Sync now. Your unsynced data is still saved on this device.';
+    }
+
+    if (statusCode == 403) {
+      return 'FORBIDDEN: Your account does not have permission to sync this record. Contact the system administrator.';
+    }
+
+    if (statusCode != null) {
+      return 'HTTP $statusCode: $dataText';
+    }
+
+    switch (error.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        return 'NETWORK_TIMEOUT: The server took too long to respond. The record will retry.';
+      case DioExceptionType.connectionError:
+        return 'NETWORK_ERROR: Could not reach the server. Check internet connection and retry.';
+      default:
+        return error.message ?? error.toString();
     }
   }
 
@@ -332,7 +452,9 @@ class SyncService {
     if (item.entityType == 'clinical_followup') {
       final visitJson = (m['visit'] is Map)
           ? (m['visit'] as Map).cast<String, dynamic>()
-          : null;
+          : (m['existingVisit'] is Map)
+              ? (m['existingVisit'] as Map).cast<String, dynamic>()
+              : null;
       final local = await _assessRepo.findByLocalAssessmentId(item.localEntityId);
       if (local != null) {
         local.remoteAssessmentId =

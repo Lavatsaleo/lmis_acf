@@ -7,7 +7,7 @@ import '../data/local/sync/sync_queue_repo.dart';
 import '../data/local/clinical/clinical_child_repo.dart';
 import '../data/local/isar/clinical_assessment.dart';
 import '../data/local/isar/clinical_child.dart';
-import '../screens/clinical_in_depth_assessment_screen.dart';
+import '../screens/clinical_enrollment_visit_screen.dart';
 import '../screens/clinical_followup_visit_screen.dart';
 import '../screens/clinical_edit_child_screen.dart';
 import '../widgets/nutrition_snapshot_card.dart';
@@ -167,8 +167,8 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
 
 
 
-                  // If the user registered the child but did not complete the enrollment assessment,
-                  // allow them to continue the in-depth assessment from here.
+                  // If the user registered the child but did not complete the enrollment visit,
+                  // allow them to capture anthropometry and dispensing from here.
                   if (!hasEnrollment) {
                     children.add(
                       Container(
@@ -181,10 +181,10 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            const Text('Enrollment assessment missing', style: TextStyle(fontWeight: FontWeight.w900)),
+                            const Text('Enrollment visit missing', style: TextStyle(fontWeight: FontWeight.w900)),
                             const SizedBox(height: 6),
                             Text(
-                              'This child was registered locally but the in-depth enrollment assessment was not completed. Tap below to continue.',
+                              'This child was registered locally but the enrollment anthropometry and dispensing visit was not completed. Tap below to continue.',
                               style: TextStyle(color: cs.onSurfaceVariant),
                             ),
                             const SizedBox(height: 10),
@@ -193,11 +193,10 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) => ClinicalInDepthAssessmentScreen(
+                                    builder: (_) => ClinicalEnrollmentVisitScreen(
                                       localChildId: child.localChildId,
-                                      mode: InDepthAssessmentMode.enrollment,
                                       onFinalizeQueued: () async {
-                                        // Mark enrollment as queued once the assessment screen queues the enrollment payload.
+                                        // Mark enrollment as queued once the enrollment visit queues the enrollment payload.
                                         child.status = 'QUEUED';
                                         await _childRepo.upsert(child);
                                         if (mounted) setState(() {});
@@ -207,7 +206,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                                 );
                               },
                               icon: const Icon(Icons.assignment_outlined),
-                              label: const Text('Continue enrollment assessment'),
+                              label: const Text('Complete enrollment visit'),
                             ),
                           ],
                         ),
@@ -221,7 +220,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                       children: [
                         Expanded(
                           child: ElevatedButton.icon(
-                            onPressed: isDischarged
+                            onPressed: (isDischarged || !hasEnrollment)
                                 ? null
                                 : () {
                                     Navigator.push(
@@ -238,21 +237,9 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: OutlinedButton.icon(
-                            onPressed: isDischarged
-                                ? null
-                                : () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => ClinicalInDepthAssessmentScreen(
-                                          localChildId: child.localChildId,
-                                          mode: InDepthAssessmentMode.discharge,
-                                        ),
-                                      ),
-                                    );
-                                  },
+                            onPressed: null,
                             icon: const Icon(Icons.logout),
-                            label: const Text('Discharge'),
+                            label: const Text('Discharge later'),
                           ),
                         ),
                       ],
@@ -289,7 +276,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                           if (dueForDischarge) ...[
                             const SizedBox(height: 6),
                             Text(
-                              'This child is due for discharge (6 months reached). Please complete the discharge assessment.',
+                              'This child is due for discharge (6 months reached). The simplified discharge workflow will be added separately.',
                               style: TextStyle(color: cs.error, fontWeight: FontWeight.w800),
                             ),
                           ],
@@ -307,7 +294,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                     children.add(const SizedBox(height: 14));
                   }
 
-                  children.add(const Text('Assessments', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900)));
+                  children.add(const Text('Visits and measurements', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900)));
                   children.add(const SizedBox(height: 8));
 
                   if (items.isEmpty) {
@@ -319,7 +306,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                           borderRadius: BorderRadius.circular(18),
                           border: Border.all(color: cs.outlineVariant),
                         ),
-                        child: Text('No assessments saved locally yet.', style: TextStyle(color: cs.onSurfaceVariant)),
+                        child: Text('No visits or measurements saved locally yet.', style: TextStyle(color: cs.onSurfaceVariant)),
                       ),
                     );
                     return ListView(children: children);
@@ -328,7 +315,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                   for (final a in items) {
                     final label = _assessmentLabel(a);
                     final encounterType = _encounterType(a);
-                    final canEdit = (a.status != 'SYNCED') && (encounterType == 'FOLLOWUP' || encounterType == 'ENROLLMENT' || encounterType == 'DISCHARGE');
+                    final canEdit = (a.status != 'SYNCED') && (encounterType == 'FOLLOWUP' || encounterType == 'ENROLLMENT');
                     children.add(
                       ListTile(
                         tileColor: cs.surface,
@@ -385,7 +372,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
     }
 
     final encounterType = (data?['encounterType'] ?? '').toString().toUpperCase();
-    final canEdit = (a.status != 'SYNCED') && (encounterType == 'FOLLOWUP' || encounterType == 'ENROLLMENT' || encounterType == 'DISCHARGE');
+    final canEdit = (a.status != 'SYNCED') && (encounterType == 'FOLLOWUP' || encounterType == 'ENROLLMENT');
 
     final notes = (data?['analysis']?['notes'] as List?)?.cast<String>() ?? const <String>[];
 
@@ -400,7 +387,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text('Assessment ${_fmtDate(a.assessmentDate)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                Text('Record ${_fmtDate(a.assessmentDate)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
                 const SizedBox(height: 10),
 
                 if (canEdit) ...[
@@ -410,7 +397,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                       _openEdit(context, a, encounterType);
                     },
                     icon: const Icon(Icons.edit),
-                    label: Text(encounterType == 'FOLLOWUP' ? 'Edit this follow-up' : 'Edit this assessment'),
+                    label: Text(encounterType == 'FOLLOWUP' ? 'Edit this follow-up' : 'Edit this enrollment visit'),
                   ),
                   const SizedBox(height: 10),
                   OutlinedButton.icon(
@@ -475,7 +462,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                   ),
                 ],
                 const SizedBox(height: 10),
-                Text('Raw data saved locally (JSON):', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                Text('Local record data (JSON):', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
                 const SizedBox(height: 6),
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -509,18 +496,22 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
       return;
     }
 
-    if (t == 'ENROLLMENT' || t == 'DISCHARGE') {
+    if (t == 'ENROLLMENT') {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => ClinicalInDepthAssessmentScreen(
+          builder: (_) => ClinicalEnrollmentVisitScreen(
             localChildId: a.localChildId,
-            mode: t == 'DISCHARGE' ? InDepthAssessmentMode.discharge : InDepthAssessmentMode.enrollment,
             editAssessmentId: a.localAssessmentId,
           ),
         ),
       );
+      return;
     }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Editing this record is not available in the simplified workflow.')),
+    );
   }
 
   static String _fmtDate(DateTime d) {
@@ -556,7 +547,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
       final t = (m['encounterType'] ?? '').toString().toUpperCase();
       if (t == 'FOLLOWUP') return 'Follow-up visit';
       if (t == 'DISCHARGE') return 'Discharge assessment';
-      if (t == 'ENROLLMENT') return 'Enrollment assessment';
+      if (t == 'ENROLLMENT') return 'Enrollment visit';
     } catch (_) {
       // ignore
     }

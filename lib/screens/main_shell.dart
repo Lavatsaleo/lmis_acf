@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/sync/auto_sync_service.dart';
 import '../data/local/sync/sync_queue_repo.dart';
 import 'home_screen.dart';
 import 'queue_inspector_screen.dart';
@@ -17,10 +18,11 @@ class MainShell extends StatefulWidget {
   State<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends State<MainShell> {
+class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   int _index = 0;
 
   final SyncQueueRepo _queueRepo = SyncQueueRepo();
+  final AutoSyncService _autoSyncService = AutoSyncService.instance;
 
   late final List<Widget> _pages = const [
     HomeScreen(),
@@ -28,6 +30,27 @@ class _MainShellState extends State<MainShell> {
     QueueInspectorScreen(),
     ProfileScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _autoSyncService.start();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _autoSyncService.stop();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _autoSyncService.forceSync(reason: 'app_resumed');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
