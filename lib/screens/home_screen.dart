@@ -10,7 +10,7 @@ import '../widgets/acf_tiles.dart';
 ///
 /// After login, users first choose which module they want to work in:
 /// - Warehouse (LMIS movements: receive/dispatch/lookup/sync)
-/// - Clinical (patient workflow: registration + in-depth assessment - coming next)
+/// - Clinical (patient workflow: enrollment, anthropometry, dispensing and follow-ups)
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -126,7 +126,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
           AcfActionTile(
             title: 'Clinical',
-            subtitle: 'Child enrollment, follow-ups, in-depth assessment, discharge.',
+            subtitle: 'Child enrollment, anthropometry, dispensing and follow-ups.',
             icon: Icons.medical_services_outlined,
             enabled: canClinical,
             onTap: () => Navigator.push(

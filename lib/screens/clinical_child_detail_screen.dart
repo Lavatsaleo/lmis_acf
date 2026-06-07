@@ -13,6 +13,8 @@ import '../screens/clinical_edit_child_screen.dart';
 import '../widgets/nutrition_snapshot_card.dart';
 import '../widgets/whz_growth_chart_card.dart';
 import '../widgets/acf_brand.dart';
+import '../utils/clinical/clinical_status.dart';
+import '../widgets/clinical_status_card.dart';
 
 class ClinicalChildDetailScreen extends StatefulWidget {
   final String localChildId;
@@ -161,7 +163,8 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                   final hasEnrollment = _hasEncounter(items, 'ENROLLMENT');
 
                   final monthsInProgram = _monthsBetween(child.enrollmentDate, DateTime.now());
-                  final dueForDischarge = !isDischarged && monthsInProgram >= 6;
+                  final latestClinicalStatus = _latestClinicalStatus(child, items);
+                  final exitEligible = !isDischarged && (latestClinicalStatus?.isExitEligible ?? false);
 
                   final children = <Widget>[];
 
@@ -239,7 +242,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                           child: OutlinedButton.icon(
                             onPressed: null,
                             icon: const Icon(Icons.logout),
-                            label: const Text('Discharge later'),
+                            label: const Text('Exit later'),
                           ),
                         ),
                       ],
@@ -273,10 +276,10 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                             const SizedBox(height: 6),
                             Text('Status: DISCHARGED', style: TextStyle(color: cs.primary, fontWeight: FontWeight.w900)),
                           ],
-                          if (dueForDischarge) ...[
+                          if (exitEligible) ...[
                             const SizedBox(height: 6),
                             Text(
-                              'This child is due for discharge (6 months reached). The simplified discharge workflow will be added separately.',
+                              'This child is exit eligible: recovery criteria achieved and 6 months in programme completed.',
                               style: TextStyle(color: cs.error, fontWeight: FontWeight.w800),
                             ),
                           ],
@@ -286,6 +289,11 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                   );
 
                   children.add(const SizedBox(height: 12));
+
+                  if (latestClinicalStatus != null) {
+                    children.add(ClinicalStatusCard(result: latestClinicalStatus));
+                    children.add(const SizedBox(height: 12));
+                  }
 
                   if (items.isNotEmpty) {
                     children.add(NutritionSnapshotCard(child: child, latest: items.first));
@@ -512,6 +520,40 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Editing this record is not available in the simplified workflow.')),
     );
+  }
+
+  static ClinicalStatusResult? _latestClinicalStatus(ClinicalChild child, List<ClinicalAssessment> items) {
+    final latest = ClinicalStatusCalculator.latestMeasurement(items);
+    if (latest == null) return null;
+
+    final previous = ClinicalStatusCalculator.findPreviousMeasurement(
+      items,
+      beforeOrOnDate: latest.visitDate.subtract(const Duration(days: 1)),
+      excludeLocalAssessmentId: latest.localAssessmentId,
+    );
+
+    return ClinicalStatusCalculator.evaluate(
+      current: latest,
+      previous: previous,
+      enrollmentDate: child.enrollmentDate,
+      visitDate: latest.visitDate,
+      nutritionalStatus: _nutritionalStatusForAssessment(items, latest.localAssessmentId),
+    );
+  }
+
+  static String? _nutritionalStatusForAssessment(List<ClinicalAssessment> items, String? localAssessmentId) {
+    if (localAssessmentId == null) return null;
+    for (final item in items) {
+      if (item.localAssessmentId != localAssessmentId) continue;
+      try {
+        final m = jsonDecode(item.dataJson) as Map<String, dynamic>;
+        final derived = (m['derived'] as Map?)?.cast<String, dynamic>();
+        return (derived?['nutritionalStatus'] ?? m['nutritionalStatus'])?.toString();
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
   }
 
   static String _fmtDate(DateTime d) {

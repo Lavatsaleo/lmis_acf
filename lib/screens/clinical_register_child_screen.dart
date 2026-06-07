@@ -42,6 +42,7 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
   final _lastName = TextEditingController();
   final _cwcNumber = TextEditingController();
   DateTime? _dob;
+  DateTime _enrollmentDate = DateTime.now();
   String _sex = 'FEMALE';
 
   // CHP
@@ -102,13 +103,39 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
       lastDate: now,
     );
     if (picked == null) return;
-    setState(() => _dob = picked);
+    setState(() {
+      _dob = picked;
+      if (_enrollmentDate.isBefore(picked)) {
+        _enrollmentDate = DateTime(picked.year, picked.month, picked.day);
+      }
+    });
   }
 
-  int _ageInMonths(DateTime dob) {
+  Future<void> _pickEnrollmentDate() async {
     final now = DateTime.now();
-    int months = (now.year - dob.year) * 12 + (now.month - dob.month);
-    if (now.day < dob.day) months -= 1;
+    final today = DateTime(now.year, now.month, now.day);
+    final first = _dob == null
+        ? DateTime(now.year - 3, 1, 1)
+        : DateTime(_dob!.year, _dob!.month, _dob!.day);
+    final initial = _enrollmentDate.isBefore(first)
+        ? first
+        : _enrollmentDate.isAfter(today)
+            ? today
+            : _enrollmentDate;
+
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: first,
+      lastDate: today,
+    );
+    if (picked == null) return;
+    setState(() => _enrollmentDate = picked);
+  }
+
+  int _ageInMonths(DateTime dob, DateTime onDate) {
+    int months = (onDate.year - dob.year) * 12 + (onDate.month - dob.month);
+    if (onDate.day < dob.day) months -= 1;
     if (months < 0) months = 0;
     return months;
   }
@@ -121,11 +148,26 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
       return;
     }
 
+    final enrollmentDay = DateTime(_enrollmentDate.year, _enrollmentDate.month, _enrollmentDate.day);
+    final today = DateTime.now();
+    final todayDay = DateTime(today.year, today.month, today.day);
+    final dobDay = DateTime(_dob!.year, _dob!.month, _dob!.day);
+
+    if (enrollmentDay.isAfter(todayDay)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enrollment date cannot be in the future')));
+      return;
+    }
+
+    if (enrollmentDay.isBefore(dobDay)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enrollment date cannot be before date of birth')));
+      return;
+    }
+
     // Programme eligibility: only children 6–23 months are eligible for enrollment.
-    final ageMonths = _ageInMonths(_dob!);
+    final ageMonths = _ageInMonths(_dob!, enrollmentDay);
     if (ageMonths < 6 || ageMonths > 23) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('This programme is for children 6–23 months. Child is $ageMonths months old.')),
+        SnackBar(content: Text('This programme is for children 6–23 months at enrollment. Child was $ageMonths months old on ${_fmtDate(enrollmentDay)}.')),
       );
       return;
     }
@@ -238,7 +280,7 @@ setState(() => _saving = true);
         ..sex = _sex
         ..dateOfBirth = _dob
         ..cwcNumber = _cwcNumber.text.trim().isEmpty ? null : _cwcNumber.text.trim()
-        ..enrollmentDate = DateTime.now()
+        ..enrollmentDate = DateTime(_enrollmentDate.year, _enrollmentDate.month, _enrollmentDate.day)
         ..chpName = _chpName.text.trim().isEmpty ? null : _chpName.text.trim()
         ..chpContacts = _chpContacts.text.trim().isEmpty ? null : _chpContacts.text.trim()
         ..facilityCode = _facilityCode.text.trim().isEmpty ? null : _facilityCode.text.trim()
@@ -286,7 +328,7 @@ setState(() => _saving = true);
       'sex': c.sex,
       'dateOfBirth': c.dateOfBirth != null ? fmt(c.dateOfBirth!) : null,
       'cwcNumber': c.cwcNumber,
-      'enrollmentDate': fmt(DateTime.now()),
+      'enrollmentDate': fmt(c.enrollmentDate),
       'chpName': c.chpName,
       'chpContacts': c.chpContacts,
       if (c.facilityCode != null && c.facilityCode!.isNotEmpty) 'facilityCode': c.facilityCode,
@@ -298,7 +340,7 @@ setState(() => _saving = true);
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Register child'),
+      appBar: const AcfAppBar(title: 'Enroll child'),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
@@ -385,6 +427,37 @@ setState(() => _saving = true);
                     ],
                   ),
                 ),
+              ),
+              const SizedBox(height: 10),
+              InkWell(
+                onTap: _pickEnrollmentDate,
+                borderRadius: BorderRadius.circular(12),
+                child: Ink(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: cs.outlineVariant),
+                    color: cs.surface,
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.event_available_outlined, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Enrollment date: ${_fmtDate(_enrollmentDate)}',
+                          style: TextStyle(color: cs.onSurface),
+                        ),
+                      ),
+                      const Icon(Icons.edit_calendar),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Use the actual date the child entered the programme. This can be backdated for paper records.',
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 10),
               TextFormField(

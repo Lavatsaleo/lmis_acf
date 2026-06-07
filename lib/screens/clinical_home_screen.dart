@@ -148,8 +148,8 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
               children: [
                 Expanded(
                   child: AcfActionTile(
-                    title: 'Register child',
-                    subtitle: 'Enroll + in-depth assessment (offline-first)',
+                    title: 'Enroll child',
+                    subtitle: 'Enrollment, anthropometry & dispensing',
                     icon: Icons.person_add_alt_1,
                     enabled: _canUseClinical,
                     onTap: () {
@@ -216,7 +216,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
                     future: _assessRepo.countDraftOrQueued(),
                     builder: (context, snap) {
                       final v = snap.data ?? 0;
-                      return _StatPill(label: 'Local assessments', value: '$v');
+                      return _StatPill(label: 'Local visits', value: '$v');
                     },
                   ),
                 ),
@@ -286,7 +286,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
                               return _EmptyState(
                                 title: 'No local enrollments yet',
                                 subtitle: _canUseClinical
-                                    ? 'Tap “Register child” to start an enrollment (works offline).'
+                                    ? 'Tap “Enroll child” to start an enrollment (works offline).'
                                     : 'You are logged in, but your account does not have clinical permissions.',
                               );
                             }

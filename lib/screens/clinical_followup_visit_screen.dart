@@ -13,7 +13,9 @@ import '../data/local/sync/sync_queue_repo.dart';
 import '../core/sync/sync_service.dart';
 import '../utils/growth/growth_models.dart';
 import '../utils/growth/whz_calculator.dart';
+import '../utils/clinical/clinical_status.dart';
 import '../widgets/acf_brand.dart';
+import '../widgets/clinical_status_card.dart';
 
 /// Follow-up visit screen
 ///
@@ -56,6 +58,7 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
 
   double? _whz;
   String? _status;
+  ClinicalStatusResult? _clinicalStatus;
 
   @override
   void initState() {
@@ -146,10 +149,9 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
     return GrowthSex.male;
   }
 
-  int _ageInMonths(DateTime dob) {
-    final now = DateTime.now();
-    int months = (now.year - dob.year) * 12 + (now.month - dob.month);
-    if (now.day < dob.day) months -= 1;
+  int _ageInMonths(DateTime dob, DateTime onDate) {
+    int months = (onDate.year - dob.year) * 12 + (onDate.month - dob.month);
+    if (onDate.day < dob.day) months -= 1;
     if (months < 0) months = 0;
     return months;
   }
@@ -218,6 +220,7 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
       setState(() {
         _whz = null;
         _status = null;
+        _clinicalStatus = null;
       });
       return;
     }
@@ -227,7 +230,7 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
     final calc = const WhzCalculator();
     final res = await calc.compute(
       sex: _parseSex(child!.sex),
-      ageMonths: _ageInMonths(child.dateOfBirth!),
+      ageMonths: _ageInMonths(child.dateOfBirth!, _visitDate),
       weightKg: weight,
       heightCm: height,
     );
@@ -235,11 +238,40 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
     final whz = res.z;
     final statusWhz = _classifyWhz(whz);
     final statusMuac = _classifyMuac(_parseI(_muacMm));
+    final nutritionalStatus = _mostSevere(statusWhz, statusMuac);
 
+    final previous = await _findPreviousMeasurement();
+    final clinicalStatus = ClinicalStatusCalculator.evaluate(
+      current: ClinicalMeasurement(
+        visitDate: _visitDate,
+        weightKg: weight,
+        heightCm: height,
+        muacMm: _parseI(_muacMm),
+        whzScore: whz,
+        encounterType: 'FOLLOWUP',
+        localAssessmentId: _editing?.localAssessmentId,
+      ),
+      previous: previous,
+      enrollmentDate: child.enrollmentDate,
+      visitDate: _visitDate,
+      nutritionalStatus: nutritionalStatus,
+    );
+
+    if (!mounted) return;
     setState(() {
       _whz = whz;
-      _status = _mostSevere(statusWhz, statusMuac);
+      _status = nutritionalStatus;
+      _clinicalStatus = clinicalStatus;
     });
+  }
+
+  Future<ClinicalMeasurement?> _findPreviousMeasurement() async {
+    final items = await _assessRepo.listForChild(widget.localChildId, limit: 100);
+    return ClinicalStatusCalculator.findPreviousMeasurement(
+      items,
+      beforeOrOnDate: _visitDate.subtract(const Duration(days: 1)),
+      excludeLocalAssessmentId: _editing?.localAssessmentId,
+    );
   }
 
   Future<void> _pickVisitDate() async {
@@ -257,6 +289,7 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
     );
     if (picked == null) return;
     setState(() => _visitDate = picked);
+    await _recompute();
   }
 
   Future<void> _pickNextAppointment() async {
@@ -303,6 +336,8 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
         return;
       }
 
+      await _recompute();
+
       final assessmentDate = DateTime(_visitDate.year, _visitDate.month, _visitDate.day, 12);
 
       final data = <String, dynamic>{
@@ -321,6 +356,7 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
         },
         'derived': {
           'nutritionalStatus': _status,
+          if (_clinicalStatus != null) ..._clinicalStatus!.toJson(),
         },
       };
 
@@ -354,6 +390,7 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
         'nextAppointmentDate': _fmtDate(_nextAppointment!),
         'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
         'quantitySachets': sachets,
+        if (_clinicalStatus != null) 'clinicalStatus': _clinicalStatus!.toJson(),
       };
 
       final q = SyncQueueItem.build(
@@ -470,8 +507,10 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
                         Expanded(
                           child: TextFormField(
                             controller: _weightKg,
-                            decoration: const InputDecoration(labelText: 'Weight (kg)'),
+                            decoration: const InputDecoration(labelText: 'Weight (kg) *'),
                             keyboardType: TextInputType.number,
+                            inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
+                            validator: (v) => double.tryParse((v ?? '').trim()) == null ? 'Required' : null,
                             onChanged: (_) => _recompute(),
                           ),
                         ),
@@ -479,8 +518,10 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
                         Expanded(
                           child: TextFormField(
                             controller: _heightCm,
-                            decoration: const InputDecoration(labelText: 'Height/Length (cm)'),
+                            decoration: const InputDecoration(labelText: 'Height/Length (cm) *'),
                             keyboardType: TextInputType.number,
+                            inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
+                            validator: (v) => double.tryParse((v ?? '').trim()) == null ? 'Required' : null,
                             onChanged: (_) => _recompute(),
                           ),
                         ),
@@ -489,34 +530,17 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
                     const SizedBox(height: 10),
                     TextFormField(
                       controller: _muacMm,
-                      decoration: const InputDecoration(labelText: 'MUAC (mm)'),
+                      decoration: const InputDecoration(labelText: 'MUAC (mm) *'),
                       keyboardType: TextInputType.number,
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(3)],
+                      validator: (v) => int.tryParse((v ?? '').trim()) == null ? 'Required' : null,
                       onChanged: (_) => _recompute(),
                     ),
 
                     const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: cs.surface,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: cs.outlineVariant),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.insights),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _status == null
-                                  ? 'Nutrition status: (enter weight/height/MUAC)'
-                                  : 'Nutrition status: $_status (WHZ: ${_whz?.toStringAsFixed(2) ?? '-'})',
-                              style: const TextStyle(fontWeight: FontWeight.w800),
-                            ),
-                          ),
-                        ],
-                      ),
+                    ClinicalStatusCard(
+                      result: _clinicalStatus,
+                      emptyText: 'Enter weight, height and MUAC to calculate recovery, progress and exit eligibility.',
                     ),
 
                     const SizedBox(height: 16),

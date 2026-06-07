@@ -13,7 +13,9 @@ import '../data/local/isar/sync_queue_item.dart';
 import '../data/local/sync/sync_queue_repo.dart';
 import '../utils/growth/growth_models.dart';
 import '../utils/growth/whz_calculator.dart';
+import '../utils/clinical/clinical_status.dart';
 import '../widgets/acf_brand.dart';
+import '../widgets/clinical_status_card.dart';
 
 /// Simple enrollment visit screen.
 ///
@@ -72,6 +74,7 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
 
   double? _whz;
   String? _status;
+  ClinicalStatusResult? _clinicalStatus;
 
   @override
   void initState() {
@@ -240,6 +243,7 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
       setState(() {
         _whz = null;
         _status = null;
+        _clinicalStatus = null;
       });
       return;
     }
@@ -256,10 +260,28 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
     final statusWhz = _classifyWhz(whz);
     final statusMuac = _classifyMuac(_parseI(_muacMm));
 
+    final nutritionalStatus = _mostSevere(statusWhz, statusMuac);
+    final clinicalStatus = ClinicalStatusCalculator.evaluate(
+      current: ClinicalMeasurement(
+        visitDate: _visitDate,
+        weightKg: weight,
+        heightCm: height,
+        muacMm: _parseI(_muacMm),
+        whzScore: whz,
+        encounterType: 'ENROLLMENT',
+        localAssessmentId: _editing?.localAssessmentId,
+      ),
+      previous: null,
+      enrollmentDate: child.enrollmentDate,
+      visitDate: _visitDate,
+      nutritionalStatus: nutritionalStatus,
+    );
+
     if (!mounted) return;
     setState(() {
       _whz = whz;
-      _status = _mostSevere(statusWhz, statusMuac);
+      _status = nutritionalStatus;
+      _clinicalStatus = clinicalStatus;
     });
   }
 
@@ -342,6 +364,8 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
         return;
       }
 
+      await _recompute();
+
       final assessmentDate = DateTime(_visitDate.year, _visitDate.month, _visitDate.day, 12);
       final notes = _notes.text.trim().isEmpty ? null : _notes.text.trim();
 
@@ -362,6 +386,7 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
         },
         'derived': {
           'nutritionalStatus': _status,
+          if (_clinicalStatus != null) ..._clinicalStatus!.toJson(),
         },
       };
 
@@ -407,6 +432,7 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
         'nextAppointmentDate': _fmtDate(_nextAppointment!),
         'notes': notes,
         'nutritionalStatus': _status,
+        if (_clinicalStatus != null) 'clinicalStatus': _clinicalStatus!.toJson(),
       };
 
       final SyncQueueItem item;
@@ -562,27 +588,9 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
                       onChanged: (_) => _recompute(),
                     ),
                     const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: cs.surface,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: cs.outlineVariant),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.insights),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _status == null
-                                  ? 'Nutrition status: enter weight, height and MUAC'
-                                  : 'Nutrition status: $_status (WHZ: ${_whz?.toStringAsFixed(2) ?? '-'})',
-                              style: const TextStyle(fontWeight: FontWeight.w800),
-                            ),
-                          ),
-                        ],
-                      ),
+                    ClinicalStatusCard(
+                      result: _clinicalStatus,
+                      emptyText: 'Enter weight, height and MUAC to calculate recovery and exit eligibility.',
                     ),
                     const SizedBox(height: 16),
                     const Text('Dispensing', style: TextStyle(fontWeight: FontWeight.w900)),
@@ -614,7 +622,7 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'The full in-depth assessment form has been removed from this workflow. This visit will still update charts, nutrition status and facility stock during sync.',
+                      'This visit updates charts, recovery status, exit eligibility and facility stock during sync.',
                       style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                       textAlign: TextAlign.center,
                     ),
