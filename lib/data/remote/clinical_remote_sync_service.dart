@@ -249,7 +249,12 @@ class ClinicalRemoteSyncService {
 
       final visitRemoteIdRaw = (v['id'] ?? '').toString().trim();
       final visitRemoteKey = visitRemoteIdRaw.isEmpty ? '' : 'visit:$visitRemoteIdRaw';
-      final existingV = visitRemoteKey.isEmpty ? null : await _assessRepo.findByRemoteAssessmentId(visitRemoteKey);
+      ClinicalAssessment? existingV;
+      if (visitRemoteKey.isNotEmpty) {
+        existingV = await _assessRepo.findByRemoteAssessmentId(visitRemoteKey);
+        // Backward compatibility for phones that stored raw visit ids before the visit: prefix fix.
+        existingV ??= await _assessRepo.findByRemoteAssessmentId(visitRemoteIdRaw);
+      }
 
       int sachets = 0;
       final disp = v['dispenses'];
@@ -261,13 +266,27 @@ class ClinicalRemoteSyncService {
         }
       }
 
+      final childEnrollmentDate = _parseDt(summary['enrollmentDate']);
+      final notes = (v['notes'] ?? '').toString();
+      final isEnrollmentVisit =
+          (v['source'] ?? '').toString().toUpperCase().contains('ENROLLMENT') ||
+          notes.toUpperCase().contains('ENROLLMENT') ||
+          (childEnrollmentDate != null && _sameDay(visitDate, childEnrollmentDate));
+
       final data = <String, dynamic>{
-        'encounterType': 'FOLLOWUP',
+        'encounterType': isEnrollmentVisit ? 'ENROLLMENT' : 'FOLLOWUP',
         'visit': {
-          'visitDate': visitDate.toIso8601String(),
+          'visitDate': _fmtDate(visitDate),
+          'sachetsDispensed': sachets,
           'quantitySachets': sachets,
           if (v['nextAppointmentDate'] != null) 'nextAppointmentDate': v['nextAppointmentDate'],
-          if ((v['notes'] ?? '').toString().trim().isNotEmpty) 'notes': v['notes'].toString(),
+          if (notes.trim().isNotEmpty) 'notes': notes,
+        },
+        'anthropometry': {
+          'weightKg': _toDouble(v['weightKg']),
+          'heightCm': _toDouble(v['heightCm']),
+          'muacMm': _toInt(v['muacMm']),
+          'whzScore': _toDouble(v['whzScore']),
         },
       };
 
@@ -333,5 +352,9 @@ class ClinicalRemoteSyncService {
     final m = d.month.toString().padLeft(2, '0');
     final day = d.day.toString().padLeft(2, '0');
     return '$y-$m-$day';
+  }
+
+  bool _sameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 }

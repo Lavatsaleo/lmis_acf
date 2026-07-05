@@ -197,6 +197,12 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
     return int.tryParse(t);
   }
 
+  String? _remoteVisitIdFromAssessment(ClinicalAssessment? a) {
+    final raw = (a?.remoteAssessmentId ?? '').trim();
+    if (raw.isEmpty) return null;
+    return raw.startsWith('visit:') ? raw.substring('visit:'.length) : raw;
+  }
+
   String _classifyWhz(double? z) {
     if (z == null) return 'Unknown';
     if (z < -3) return 'Severe Wasting';
@@ -409,68 +415,114 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
 
       await _assessRepo.upsert(a);
 
-      Map<String, dynamic> base;
-      final queueItem = _existingEnrollQueueItem;
-      if (queueItem != null && (queueItem.payloadJson ?? '').trim().isNotEmpty) {
-        base = (jsonDecode(queueItem.payloadJson!) as Map).cast<String, dynamic>();
-      } else if ((widget.draftEnrollmentJson ?? '').trim().isNotEmpty) {
-        base = (jsonDecode(widget.draftEnrollmentJson!) as Map).cast<String, dynamic>();
-      } else {
-        base = _buildEnrollPayloadFromChild(child);
-      }
-
-      // The old full in-depth assessment is intentionally not included.
-      base.remove('inDepthAssessment');
-      base['visit'] = {
-        'visitDate': _fmtDate(_visitDate),
-        'weightKg': weightKg,
-        'heightCm': heightCm,
-        'muacMm': muacMm,
-        'whzScore': _whz,
-        'sachetsDispensed': sachets,
-        'quantitySachets': sachets,
-        'nextAppointmentDate': _fmtDate(_nextAppointment!),
-        'notes': notes,
-        'nutritionalStatus': _status,
-        if (_clinicalStatus != null) 'clinicalStatus': _clinicalStatus!.toJson(),
-      };
+      final remoteVisitId = _remoteVisitIdFromAssessment(existing);
+      final isSyncedVisitEdit = existing != null &&
+          remoteVisitId != null &&
+          remoteVisitId.trim().isNotEmpty &&
+          (child.remoteChildId ?? '').trim().isNotEmpty;
 
       final SyncQueueItem item;
-      if (queueItem != null) {
-        queueItem.payloadJson = jsonEncode(base);
-        queueItem.status = SyncStatus.pending;
-        queueItem.lastError = null;
-        queueItem.lastAttemptAt = null;
-        queueItem.attempts = 0;
-        item = queueItem;
-      } else {
+      if (isSyncedVisitEdit) {
+        final payload = <String, dynamic>{
+          'localChildId': child.localChildId,
+          'remoteVisitId': remoteVisitId,
+          'visitDate': _fmtDate(_visitDate),
+          'weightKg': weightKg,
+          'heightCm': heightCm,
+          'muacMm': muacMm,
+          'whzScore': _whz,
+          'sachetsDispensed': sachets,
+          'quantitySachets': sachets,
+          'nextAppointmentDate': _fmtDate(_nextAppointment!),
+          'notes': notes,
+          'nutritionalStatus': _status,
+          if (_clinicalStatus != null) 'clinicalStatus': _clinicalStatus!.toJson(),
+        };
+
         item = SyncQueueItem.build(
-          queueId: a.localAssessmentId,
-          entityType: 'clinical_enroll',
-          localEntityId: child.localChildId,
-          method: 'POST',
-          endpoint: '/api/clinical/enroll',
-          operation: SyncOperation.create,
-          payloadJson: jsonEncode(base),
-          idempotencyKey: a.localAssessmentId,
+          queueId: 'update-${a.localAssessmentId}',
+          entityType: 'clinical_visit_update',
+          localEntityId: a.localAssessmentId,
+          dependsOnLocalEntityId: child.localChildId,
+          method: 'PATCH',
+          endpoint: '/api/clinical/children/{childId}/visits/{visitId}',
+          operation: SyncOperation.update,
+          payloadJson: jsonEncode(payload),
+          idempotencyKey: 'update-${a.localAssessmentId}',
         );
+      } else {
+        Map<String, dynamic> base;
+        final queueItem = _existingEnrollQueueItem;
+        if (queueItem != null && (queueItem.payloadJson ?? '').trim().isNotEmpty) {
+          base = (jsonDecode(queueItem.payloadJson!) as Map).cast<String, dynamic>();
+        } else if ((widget.draftEnrollmentJson ?? '').trim().isNotEmpty) {
+          base = (jsonDecode(widget.draftEnrollmentJson!) as Map).cast<String, dynamic>();
+        } else {
+          base = _buildEnrollPayloadFromChild(child);
+        }
+
+        // The old full in-depth assessment is intentionally not included.
+        base.remove('inDepthAssessment');
+        base['visit'] = {
+          'visitDate': _fmtDate(_visitDate),
+          'weightKg': weightKg,
+          'heightCm': heightCm,
+          'muacMm': muacMm,
+          'whzScore': _whz,
+          'sachetsDispensed': sachets,
+          'quantitySachets': sachets,
+          'nextAppointmentDate': _fmtDate(_nextAppointment!),
+          'notes': notes,
+          'nutritionalStatus': _status,
+          if (_clinicalStatus != null) 'clinicalStatus': _clinicalStatus!.toJson(),
+        };
+
+        if (queueItem != null) {
+          queueItem.payloadJson = jsonEncode(base);
+          queueItem.status = SyncStatus.pending;
+          queueItem.lastError = null;
+          queueItem.lastAttemptAt = null;
+          queueItem.attempts = 0;
+          item = queueItem;
+        } else {
+          item = SyncQueueItem.build(
+            queueId: a.localAssessmentId,
+            entityType: 'clinical_enroll',
+            localEntityId: child.localChildId,
+            method: 'POST',
+            endpoint: '/api/clinical/enroll',
+            operation: SyncOperation.create,
+            payloadJson: jsonEncode(base),
+            idempotencyKey: a.localAssessmentId,
+          );
+        }
       }
 
       await _queueRepo.enqueueOrReplace(item);
 
-      child.status = 'QUEUED';
-      child.updatedAt = DateTime.now();
-      await _childRepo.upsert(child);
-      await widget.onFinalizeQueued?.call();
+      if (!isSyncedVisitEdit) {
+        child.status = 'QUEUED';
+        child.updatedAt = DateTime.now();
+        await _childRepo.upsert(child);
+        await widget.onFinalizeQueued?.call();
+      }
 
       final result = await _syncService.syncNow();
 
       if (!mounted) return;
       final msg = result.online
-          ? 'Enrollment saved. Sync: sent ${result.sent}, failed ${result.failed}.'
-          : 'Enrollment saved offline and queued for automatic sync.';
+          ? (isSyncedVisitEdit
+              ? 'Enrollment visit correction saved. Sync: sent ${result.sent}, failed ${result.failed}.'
+              : 'Enrollment saved. Sync: sent ${result.sent}, failed ${result.failed}.')
+          : (isSyncedVisitEdit
+              ? 'Enrollment visit correction saved offline and queued for automatic sync.'
+              : 'Enrollment saved offline and queued for automatic sync.');
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-      Navigator.popUntil(context, (r) => r.isFirst);
+      if (isSyncedVisitEdit) {
+        Navigator.pop(context);
+      } else {
+        Navigator.popUntil(context, (r) => r.isFirst);
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));

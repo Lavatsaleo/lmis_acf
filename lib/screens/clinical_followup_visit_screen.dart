@@ -175,6 +175,12 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
     return int.tryParse(t);
   }
 
+  String? _remoteVisitIdFromAssessment(ClinicalAssessment? a) {
+    final raw = (a?.remoteAssessmentId ?? '').trim();
+    if (raw.isEmpty) return null;
+    return raw.startsWith('visit:') ? raw.substring('visit:'.length) : raw;
+  }
+
   String _classifyWhz(double? z) {
     if (z == null) return 'Unknown';
     if (z < -3) return 'Severe Wasting';
@@ -379,9 +385,16 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
 
       await _assessRepo.upsert(a);
 
-      // Queue follow-up visit for sync.
+      // Queue follow-up create or synced-visit correction for sync.
+      final remoteVisitId = _remoteVisitIdFromAssessment(existing);
+      final isSyncedVisitEdit = existing != null &&
+          remoteVisitId != null &&
+          remoteVisitId.trim().isNotEmpty &&
+          (child.remoteChildId ?? '').trim().isNotEmpty;
+
       final payload = <String, dynamic>{
         'localChildId': child.localChildId,
+        if (isSyncedVisitEdit) 'remoteVisitId': remoteVisitId,
         'visitDate': _fmtDate(_visitDate),
         'weightKg': weightKg,
         'heightCm': heightCm,
@@ -389,20 +402,23 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
         'whzScore': _whz,
         'nextAppointmentDate': _fmtDate(_nextAppointment!),
         'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+        'sachetsDispensed': sachets,
         'quantitySachets': sachets,
         if (_clinicalStatus != null) 'clinicalStatus': _clinicalStatus!.toJson(),
       };
 
       final q = SyncQueueItem.build(
-        queueId: a.localAssessmentId,
-        entityType: 'clinical_followup',
+        queueId: isSyncedVisitEdit ? 'update-${a.localAssessmentId}' : a.localAssessmentId,
+        entityType: isSyncedVisitEdit ? 'clinical_visit_update' : 'clinical_followup',
         localEntityId: a.localAssessmentId,
         dependsOnLocalEntityId: child.localChildId,
-        method: 'POST',
-        endpoint: '/api/clinical/children/{childId}/visits',
-        operation: SyncOperation.create,
+        method: isSyncedVisitEdit ? 'PATCH' : 'POST',
+        endpoint: isSyncedVisitEdit
+            ? '/api/clinical/children/{childId}/visits/{visitId}'
+            : '/api/clinical/children/{childId}/visits',
+        operation: isSyncedVisitEdit ? SyncOperation.update : SyncOperation.create,
         payloadJson: jsonEncode(payload),
-        idempotencyKey: a.localAssessmentId,
+        idempotencyKey: isSyncedVisitEdit ? 'update-${a.localAssessmentId}' : a.localAssessmentId,
       );
       await _queueRepo.enqueueOrReplace(q);
 

@@ -394,6 +394,7 @@ class SyncService {
 
     if (item.entityType != 'clinical_enroll' &&
         item.entityType != 'clinical_followup' &&
+        item.entityType != 'clinical_visit_update' &&
         item.entityType != 'clinical_discharge') {
       return;
     }
@@ -410,13 +411,16 @@ class SyncService {
     }
     if (m == null) return;
 
-    // --- ENROLLMENT: map local child -> remote child and mark enrollment assessment synced ---
+    // --- ENROLLMENT: map local child -> remote child and mark enrollment visit synced ---
     if (item.entityType == 'clinical_enroll') {
       final childJson = (m['child'] is Map)
           ? (m['child'] as Map).cast<String, dynamic>()
           : null;
       final assessmentJson = (m['assessment'] is Map)
           ? (m['assessment'] as Map).cast<String, dynamic>()
+          : null;
+      final visitJson = (m['visit'] is Map)
+          ? (m['visit'] as Map).cast<String, dynamic>()
           : null;
 
       if (childJson != null) {
@@ -431,25 +435,36 @@ class SyncService {
         }
       }
 
-      if (assessmentJson != null) {
-        final list = await _assessRepo.listForChild(item.localEntityId, limit: 20);
-        for (final a in list) {
-          if (a.status != 'SYNCED') {
-            a.remoteAssessmentId = assessmentJson['id']?.toString();
-            a.status = 'SYNCED';
-            if (AppConfig.purgeSensitiveAfterSync) {
-              a.dataJson = _purgeAssessmentJson(a.dataJson);
-            }
-            await _assessRepo.upsert(a);
+      var localAssessment = await _assessRepo.findByLocalAssessmentId(item.queueId);
+      if (localAssessment == null) {
+        final candidates = await _assessRepo.listForChild(item.localEntityId, limit: 20);
+        for (final candidate in candidates) {
+          if (candidate.status != 'SYNCED') {
+            localAssessment = candidate;
             break;
           }
         }
       }
+
+      if (localAssessment != null) {
+        final visitId = visitJson?['id']?.toString().trim();
+        final assessmentId = assessmentJson?['id']?.toString().trim();
+        if (visitId != null && visitId.isNotEmpty) {
+          localAssessment.remoteAssessmentId = 'visit:$visitId';
+        } else if (assessmentId != null && assessmentId.isNotEmpty) {
+          localAssessment.remoteAssessmentId = assessmentId;
+        }
+        localAssessment.status = 'SYNCED';
+        if (AppConfig.purgeSensitiveAfterSync) {
+          localAssessment.dataJson = _purgeAssessmentJson(localAssessment.dataJson);
+        }
+        await _assessRepo.upsert(localAssessment);
+      }
       return;
     }
 
-    // --- FOLLOW-UP VISIT: map local follow-up record -> remote ChildVisit id ---
-    if (item.entityType == 'clinical_followup') {
+    // --- FOLLOW-UP / VISIT UPDATE: map local visit record -> remote ChildVisit id ---
+    if (item.entityType == 'clinical_followup' || item.entityType == 'clinical_visit_update') {
       final visitJson = (m['visit'] is Map)
           ? (m['visit'] as Map).cast<String, dynamic>()
           : (m['existingVisit'] is Map)
@@ -457,8 +472,10 @@ class SyncService {
               : null;
       final local = await _assessRepo.findByLocalAssessmentId(item.localEntityId);
       if (local != null) {
-        local.remoteAssessmentId =
-            visitJson?['id']?.toString() ?? local.remoteAssessmentId;
+        final remoteVisitId = visitJson?['id']?.toString().trim();
+        if (remoteVisitId != null && remoteVisitId.isNotEmpty) {
+          local.remoteAssessmentId = 'visit:$remoteVisitId';
+        }
         local.status = 'SYNCED';
         await _assessRepo.upsert(local);
       }
@@ -485,31 +502,57 @@ class SyncService {
   }
 
   Future<String> _resolveEndpoint(SyncQueueItem item) async {
-    // Replace `{childId}` with the server-side child id.
-    if (!item.endpoint.contains('{childId}')) return item.endpoint;
+    var endpoint = item.endpoint;
 
-    // For follow-up/discharge we always set dependsOnLocalEntityId = localChildId.
-    String? localChildId = item.dependsOnLocalEntityId;
-    if (localChildId == null || localChildId.trim().isEmpty) {
+    // Replace `{childId}` with the server-side child id.
+    if (endpoint.contains('{childId}')) {
+      String? localChildId = item.dependsOnLocalEntityId;
+      if (localChildId == null || localChildId.trim().isEmpty) {
+        try {
+          final p = item.payloadJson == null ? null : jsonDecode(item.payloadJson!);
+          if (p is Map && p['localChildId'] != null) {
+            localChildId = p['localChildId'].toString();
+          }
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      if (localChildId == null || localChildId.trim().isEmpty) {
+        return endpoint;
+      }
+
+      final child = await _childRepo.findByLocalId(localChildId.trim());
+      final remote = child?.remoteChildId;
+      if (remote == null || remote.trim().isEmpty) return endpoint;
+      endpoint = endpoint.replaceAll('{childId}', remote.trim());
+    }
+
+    // Replace `{visitId}` with the server-side ChildVisit id.
+    if (endpoint.contains('{visitId}')) {
+      String? remoteVisitId;
       try {
         final p = item.payloadJson == null ? null : jsonDecode(item.payloadJson!);
-        if (p is Map && p['localChildId'] != null) {
-          localChildId = p['localChildId'].toString();
+        if (p is Map && p['remoteVisitId'] != null) {
+          remoteVisitId = p['remoteVisitId'].toString();
         }
       } catch (_) {
         // ignore
       }
+
+      remoteVisitId ??= await _remoteVisitIdForLocalAssessment(item.localEntityId);
+      if (remoteVisitId == null || remoteVisitId.trim().isEmpty) return endpoint;
+      endpoint = endpoint.replaceAll('{visitId}', remoteVisitId.trim());
     }
 
-    if (localChildId == null || localChildId.trim().isEmpty) {
-      return item.endpoint;
-    }
+    return endpoint;
+  }
 
-    final child = await _childRepo.findByLocalId(localChildId.trim());
-    final remote = child?.remoteChildId;
-    if (remote == null || remote.trim().isEmpty) return item.endpoint;
-
-    return item.endpoint.replaceAll('{childId}', remote.trim());
+  Future<String?> _remoteVisitIdForLocalAssessment(String localAssessmentId) async {
+    final local = await _assessRepo.findByLocalAssessmentId(localAssessmentId);
+    final raw = local?.remoteAssessmentId?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    return raw.startsWith('visit:') ? raw.substring('visit:'.length) : raw;
   }
 
   String _purgeAssessmentJson(String raw) {

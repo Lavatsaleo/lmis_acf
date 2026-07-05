@@ -7,6 +7,7 @@ import '../data/local/sync/sync_queue_repo.dart';
 import '../data/local/clinical/clinical_child_repo.dart';
 import '../data/local/isar/clinical_assessment.dart';
 import '../data/local/isar/clinical_child.dart';
+import '../data/remote/clinical_remote_sync_service.dart';
 import '../screens/clinical_enrollment_visit_screen.dart';
 import '../screens/clinical_followup_visit_screen.dart';
 import '../screens/clinical_edit_child_screen.dart';
@@ -29,6 +30,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
   final _childRepo = ClinicalChildRepo();
   final _assessRepo = ClinicalAssessmentRepo();
   final _queueRepo = SyncQueueRepo();
+  final _remoteClinical = ClinicalRemoteSyncService();
 
   ClinicalChild? _child;
   bool _loading = true;
@@ -40,7 +42,21 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
   }
 
   Future<void> _load() async {
-    final c = await _childRepo.findByLocalId(widget.localChildId);
+    var c = await _childRepo.findByLocalId(widget.localChildId);
+
+    // If this child already exists on the server, pull the full child summary when
+    // opening details. This brings down all server visits, not only the latest
+    // facility activity row, so clinicians can identify and correct any visit.
+    final remoteChildId = (c?.remoteChildId ?? '').trim();
+    if (remoteChildId.isNotEmpty) {
+      try {
+        await _remoteClinical.importChildSummaryByRemoteId(remoteChildId);
+        c = await _childRepo.findByLocalId(widget.localChildId);
+      } catch (_) {
+        // Keep showing local data when offline or when refresh fails.
+      }
+    }
+
     if (!mounted) return;
     setState(() {
       _child = c;
@@ -323,7 +339,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                   for (final a in items) {
                     final label = _assessmentLabel(a);
                     final encounterType = _encounterType(a);
-                    final canEdit = (a.status != 'SYNCED') && (encounterType == 'FOLLOWUP' || encounterType == 'ENROLLMENT');
+                    final canEdit = _canEditVisit(child, a, encounterType);
                     children.add(
                       ListTile(
                         tileColor: cs.surface,
@@ -349,7 +365,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                             ),
                             if (canEdit)
                               IconButton(
-                                tooltip: 'Edit (not yet synced)',
+                                tooltip: a.status == 'SYNCED' ? 'Edit synced visit' : 'Edit draft visit',
                                 onPressed: () => _openEdit(context, a, encounterType),
                                 icon: const Icon(Icons.edit),
                               ),
@@ -371,6 +387,22 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
     );
   }
 
+  bool _canEditVisit(ClinicalChild child, ClinicalAssessment a, String encounterType) {
+    final t = encounterType.toUpperCase();
+    if (t != 'FOLLOWUP' && t != 'ENROLLMENT') return false;
+    if (a.status != 'SYNCED') return true;
+
+    final remoteChildId = (child.remoteChildId ?? '').trim();
+    final remoteVisitId = _remoteVisitId(a);
+    return remoteChildId.isNotEmpty && remoteVisitId != null && remoteVisitId.isNotEmpty;
+  }
+
+  String? _remoteVisitId(ClinicalAssessment a) {
+    final raw = (a.remoteAssessmentId ?? '').trim();
+    if (raw.isEmpty) return null;
+    return raw.startsWith('visit:') ? raw.substring('visit:'.length) : raw;
+  }
+
   void _showAssessment(BuildContext context, ClinicalAssessment a) {
     Map<String, dynamic>? data;
     try {
@@ -380,7 +412,9 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
     }
 
     final encounterType = (data?['encounterType'] ?? '').toString().toUpperCase();
-    final canEdit = (a.status != 'SYNCED') && (encounterType == 'FOLLOWUP' || encounterType == 'ENROLLMENT');
+    final child = _child;
+    final canEdit = child != null && _canEditVisit(child, a, encounterType);
+    final canDelete = a.status != 'SYNCED' && (encounterType == 'FOLLOWUP' || encounterType == 'ENROLLMENT');
 
     final notes = (data?['analysis']?['notes'] as List?)?.cast<String>() ?? const <String>[];
 
@@ -408,7 +442,14 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                     label: Text(encounterType == 'FOLLOWUP' ? 'Edit this follow-up' : 'Edit this enrollment visit'),
                   ),
                   const SizedBox(height: 10),
-                  OutlinedButton.icon(
+                  if (a.status == 'SYNCED')
+                    Text(
+                      'This synced visit can be corrected. Your correction will be queued and synced to the server automatically.',
+                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: FontWeight.w700),
+                    ),
+                  if (canDelete) ...[
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
                     onPressed: () async {
                       final ok = await showDialog<bool>(
                         context: context,
@@ -444,10 +485,11 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                     icon: const Icon(Icons.delete_outline),
                     label: const Text('Delete (not synced)'),
                   ),
+                  ],
                   const SizedBox(height: 12),
                 ] else ...[
                   Text(
-                    'View only (editing is available for records that have not been synced yet).',
+                    'View only. Only enrollment and follow-up visit records can be edited.',
                     style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                   ),
                   const SizedBox(height: 12),
