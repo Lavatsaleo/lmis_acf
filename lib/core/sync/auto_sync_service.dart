@@ -10,7 +10,7 @@ import 'sync_service.dart';
 ///
 /// Primary behaviour:
 /// - PUSH pending local queue items automatically.
-/// - PULL latest server-confirmed facility stock and recent clinical data.
+/// - PULL latest server-confirmed facility stock, children and visit changes.
 /// - Run when internet returns, app opens/resumes, queue changes, and periodically.
 ///
 /// The manual Sync button remains as a backup.
@@ -33,8 +33,9 @@ class AutoSyncService {
   DateTime? _lastAutoAttemptAt;
   DateTime? _lastPullRefreshAt;
 
-  static const Duration _normalAutoCooldown = Duration(seconds: 20);
-  static const Duration _pullCooldown = Duration(minutes: 2);
+  static const Duration _normalAutoCooldown = Duration(seconds: 10);
+  static const Duration _pullCooldown = Duration(seconds: 60);
+  static const Duration _foregroundInterval = Duration(seconds: 60);
 
   bool _networkLooksAvailable(List<ConnectivityResult> results) {
     return results.isNotEmpty && !results.contains(ConnectivityResult.none);
@@ -59,7 +60,7 @@ class AutoSyncService {
       }
     });
 
-    _periodicTimer = Timer.periodic(const Duration(minutes: 2), (_) {
+    _periodicTimer = Timer.periodic(_foregroundInterval, (_) {
       // Even if this phone has nothing to push, it still needs to pull updates
       // entered by other devices in the same facility.
       syncIfNeeded(reason: 'periodic_two_way_check');
@@ -108,7 +109,7 @@ class AutoSyncService {
 
     try {
       // If the app was killed mid-sync, some records may remain stuck in SENDING.
-      await _queueRepo.recoverStaleSendingItems();
+      await _queueRepo.recoverStaleSendingItems(maxAge: const Duration(minutes: 5));
 
       if (force) {
         // Internet has come back, so do not wait for previous retry backoff.
@@ -129,10 +130,12 @@ class AutoSyncService {
 
       // Pull latest server data even when this phone has nothing to push.
       // This is what allows multiple users/devices in one facility to see each
-      // other's server-synced stock and child updates automatically.
-      final shouldPull = force || _lastPullRefreshAt == null || now.difference(_lastPullRefreshAt!) >= _pullCooldown;
+      // other's server-synced stock, children and visit updates automatically.
+      final shouldPull = force ||
+          _lastPullRefreshAt == null ||
+          now.difference(_lastPullRefreshAt!) >= _pullCooldown;
       if (shouldPull) {
-        await _pullRefreshService.refreshFromServer();
+        await _pullRefreshService.refreshFromServer(recentChildrenTake: 500);
         _lastPullRefreshAt = DateTime.now();
       }
 

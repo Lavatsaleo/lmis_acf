@@ -15,6 +15,8 @@ class PullRefreshResult {
   final int boxesUpdated;
   final int childrenImported;
   final int childrenFailed;
+  final bool usedDelta;
+  final DateTime? serverTime;
 
   const PullRefreshResult({
     required this.online,
@@ -22,6 +24,8 @@ class PullRefreshResult {
     required this.boxesUpdated,
     required this.childrenImported,
     required this.childrenFailed,
+    this.usedDelta = false,
+    this.serverTime,
   });
 
   static const offline = PullRefreshResult(
@@ -41,8 +45,8 @@ class PullRefreshResult {
 ///
 /// Important multi-device rule:
 /// The server is the source of truth. A phone may show a local offline estimate,
-/// but whenever internet is available it should refresh facility stock and recent
-/// clinical activity entered by other devices in the same facility.
+/// but whenever internet is available it should refresh facility stock and every
+/// child/visit changed by other devices in the same facility.
 class PullRefreshService {
   final Connectivity _connectivity;
   final AppSettingsRepo _settingsRepo;
@@ -70,6 +74,7 @@ class PullRefreshService {
   Future<PullRefreshResult> refreshFromServer({
     int recentChildrenTake = 500,
     bool includeAppointments = true,
+    bool forceFullClinicalPull = false,
   }) async {
     if (!await isOnline()) return PullRefreshResult.offline;
 
@@ -89,6 +94,8 @@ class PullRefreshService {
     var boxesUpdated = 0;
     var childrenImported = 0;
     var childrenFailed = 0;
+    var usedDelta = false;
+    DateTime? serverTime;
 
     try {
       boxesUpdated = await _refreshFacilityStoreSummary(facilityId);
@@ -98,15 +105,28 @@ class PullRefreshService {
     }
 
     try {
-      final imported = await _refreshRecentFacilityChildren(
+      final delta = await _refreshFacilityClinicalDelta(
+        facilityId: facilityId,
         take: recentChildrenTake,
-        includeAppointments: includeAppointments,
+        forceFullClinicalPull: forceFullClinicalPull,
       );
-      childrenImported += imported.imported;
-      childrenFailed += imported.failed;
+      childrenImported += delta.imported;
+      childrenFailed += delta.failed;
+      usedDelta = delta.usedDelta;
+      serverTime = delta.serverTime;
     } catch (_) {
-      // Automatic pull should never block the user.
-      childrenFailed += 1;
+      // Fallback for older backend builds: pull recent children/appointments.
+      try {
+        final imported = await _refreshRecentFacilityChildren(
+          take: recentChildrenTake,
+          includeAppointments: includeAppointments,
+        );
+        childrenImported += imported.imported;
+        childrenFailed += imported.failed;
+      } catch (_) {
+        // Automatic pull should never block the user.
+        childrenFailed += 1;
+      }
     }
 
     return PullRefreshResult(
@@ -115,6 +135,8 @@ class PullRefreshService {
       boxesUpdated: boxesUpdated,
       childrenImported: childrenImported,
       childrenFailed: childrenFailed,
+      usedDelta: usedDelta,
+      serverTime: serverTime,
     );
   }
 
@@ -157,6 +179,47 @@ class PullRefreshService {
     );
 
     return boxes.length;
+  }
+
+  Future<_ClinicalPullCounts> _refreshFacilityClinicalDelta({
+    required String facilityId,
+    required int take,
+    required bool forceFullClinicalPull,
+  }) async {
+    final lastPull = forceFullClinicalPull ? null : await _settingsRepo.getClinicalLastPullAt(facilityId);
+    final data = await _clinicalRemote.fetchFacilitySyncDelta(since: lastPull, take: take);
+
+    final childrenRaw = data['children'];
+    final children = <Map<String, dynamic>>[];
+    if (childrenRaw is List) {
+      for (final row in childrenRaw.whereType<Map>()) {
+        children.add(row.cast<String, dynamic>());
+      }
+    }
+
+    var imported = 0;
+    var failed = 0;
+    for (final summary in children) {
+      try {
+        await _clinicalRemote.importChildSummaryMap(summary);
+        imported += 1;
+      } catch (_) {
+        failed += 1;
+      }
+    }
+
+    final serverTimeRaw = data['serverTime'];
+    final serverTime = serverTimeRaw == null ? DateTime.now().toUtc() : DateTime.tryParse(serverTimeRaw.toString())?.toUtc();
+    if (serverTime != null && failed == 0) {
+      await _settingsRepo.setClinicalLastPullAt(facilityId, serverTime);
+    }
+
+    return _ClinicalPullCounts(
+      imported: imported,
+      failed: failed,
+      usedDelta: true,
+      serverTime: serverTime,
+    );
   }
 
   Future<_ClinicalPullCounts> _refreshRecentFacilityChildren({
@@ -208,7 +271,9 @@ class PullRefreshService {
         ? (row['child'] as Map).cast<String, dynamic>()
         : row.cast<String, dynamic>();
 
+    final facility = (row['facility'] is Map) ? (row['facility'] as Map).cast<String, dynamic>() : null;
     final summary = <String, dynamic>{...child};
+    if (facility != null) summary['facility'] = facility;
 
     final caregiver = child['caregiver'];
     if (caregiver is Map) {
@@ -298,6 +363,13 @@ class PullRefreshService {
 class _ClinicalPullCounts {
   final int imported;
   final int failed;
+  final bool usedDelta;
+  final DateTime? serverTime;
 
-  const _ClinicalPullCounts({required this.imported, required this.failed});
+  const _ClinicalPullCounts({
+    required this.imported,
+    required this.failed,
+    this.usedDelta = false,
+    this.serverTime,
+  });
 }

@@ -94,7 +94,9 @@ class SyncQueueRepo {
   /// Items eligible to be synced (pending/failed), oldest-first.
   Future<List<SyncQueueItem>> listForSync({int limit = 25}) async {
     // NOTE: Isar doesn't have an "in" filter for enums in the generated API,
-    // so we query pending and failed separately and merge.
+    // so we query pending and failed separately and merge. Items marked
+    // NEEDS_REVIEW are permanent validation/conflict problems and must not keep
+    // retrying forever or block other good records.
     final pending = await _isar.syncQueueItems
         .filter()
         .statusEqualTo(SyncStatus.pending)
@@ -105,14 +107,24 @@ class SyncQueueRepo {
     if (pending.length >= limit) return pending;
 
     final remaining = limit - pending.length;
-    final failed = await _isar.syncQueueItems
+    final failedAll = await _isar.syncQueueItems
         .filter()
         .statusEqualTo(SyncStatus.failed)
         .sortByCreatedAt()
-        .limit(remaining)
+        .limit(remaining * 2)
         .findAll();
 
-    return [...pending, ...failed];
+    final retryableFailed = failedAll
+        .where((item) => !isNeedsReview(item))
+        .take(remaining)
+        .toList();
+
+    return [...pending, ...retryableFailed];
+  }
+
+  bool isNeedsReview(SyncQueueItem item) {
+    final error = (item.lastError ?? '').trim().toUpperCase();
+    return error.startsWith('NEEDS_REVIEW:');
   }
 
   Future<bool> isLocalEntitySynced(String localEntityId) async {
@@ -222,12 +234,13 @@ class SyncQueueRepo {
     });
   }
 
-  Future<void> retryAllFailed() async {
+  Future<void> retryAllFailed({bool includeNeedsReview = false}) async {
     final failed = await _isar.syncQueueItems.filter().statusEqualTo(SyncStatus.failed).findAll();
     if (failed.isEmpty) return;
 
     await _isar.writeTxn(() async {
       for (final item in failed) {
+        if (!includeNeedsReview && isNeedsReview(item)) continue;
         item.status = SyncStatus.pending;
         item.attempts = 0;
         item.lastAttemptAt = null;
@@ -243,6 +256,8 @@ class SyncQueueRepo {
 
     await _isar.writeTxn(() async {
       for (final item in [...pending, ...failed]) {
+        if (isNeedsReview(item)) continue;
+
         item.attempts = 0;
         item.lastAttemptAt = null;
         item.lastError = null;

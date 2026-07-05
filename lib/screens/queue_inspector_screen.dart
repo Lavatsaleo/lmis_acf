@@ -20,6 +20,27 @@ class _QueueInspectorScreenState extends State<QueueInspectorScreen> {
 
   bool _syncing = false;
 
+  String _statusLabel(SyncQueueItem item) {
+    final error = (item.lastError ?? '').trim();
+    if (item.status == SyncStatus.failed && error.toUpperCase().startsWith('NEEDS_REVIEW:')) {
+      return 'needs review';
+    }
+    if (item.status == SyncStatus.failed && error.toUpperCase().startsWith('LOGIN_REQUIRED:')) {
+      return 'login required';
+    }
+    return item.status.name;
+  }
+
+  IconData _statusIcon(SyncQueueItem item) {
+    final label = _statusLabel(item);
+    if (label == 'needs review') return Icons.report_problem_outlined;
+    if (label == 'login required') return Icons.lock_outline;
+    if (item.status == SyncStatus.sent) return Icons.check_circle_outline;
+    if (item.status == SyncStatus.sending) return Icons.sync;
+    if (item.status == SyncStatus.failed) return Icons.refresh;
+    return Icons.schedule;
+  }
+
   Future<void> _clearAll() async {
     await _repo.clearAll();
   }
@@ -88,9 +109,12 @@ class _QueueInspectorScreenState extends State<QueueInspectorScreen> {
                 title: Text('${it.method} ${it.endpoint}'),
                 subtitle: Text(
                   'entity=${it.entityType} localId=${it.localEntityId}\n'
-                  'status=${it.status.name} attempts=${it.attempts}',
+                  'status=${_statusLabel(it)} attempts=${it.attempts}'
+                  '${it.lastError == null ? '' : '\n${it.lastError}'}',
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: Icon(_statusIcon(it)),
                 onTap: () {
                   showModalBottomSheet(
                     context: context,

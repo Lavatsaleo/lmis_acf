@@ -84,6 +84,28 @@ class ClinicalRemoteSyncService {
     return rows.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
   }
 
+  /// Pull server changes for the active facility since the last successful pull.
+  ///
+  /// This is stronger than the older "recent children" endpoint because it also
+  /// returns children whose visits were edited by another phone.
+  Future<Map<String, dynamic>> fetchFacilitySyncDelta({
+    DateTime? since,
+    int take = 500,
+  }) async {
+    final api = await _api();
+    final qs = <String>['take=$take'];
+    if (since != null) {
+      qs.add('since=${Uri.encodeQueryComponent(since.toUtc().toIso8601String())}');
+    }
+
+    final resp = await api.request(
+      method: 'GET',
+      path: '/api/clinical/facility/sync-delta?${qs.join('&')}',
+    );
+
+    return _asMap(resp.data) ?? const <String, dynamic>{};
+  }
+
   Future<String> importChildByRemoteId(String remoteChildId) async {
     final id = remoteChildId.trim();
     if (id.isEmpty) {

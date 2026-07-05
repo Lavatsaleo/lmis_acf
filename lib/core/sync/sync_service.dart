@@ -63,7 +63,7 @@ class SyncService {
 
   Future<bool> isOnline() async {
     final results = await _connectivity.checkConnectivity();
-    return !results.contains(ConnectivityResult.none);
+    return results.isNotEmpty && !results.contains(ConnectivityResult.none);
   }
 
   Duration _backoffForAttempts(int attempts) {
@@ -151,7 +151,7 @@ class SyncService {
   /// facility, and then pulls latest server data so other users' work appears
   /// on this phone.
   Future<SyncRunResult> forceSyncNow({int limit = 100}) async {
-    await _queueRepo.recoverStaleSendingItems();
+    await _queueRepo.recoverStaleSendingItems(maxAge: const Duration(minutes: 5));
     await _queueRepo.resetRetryWindowsForAllPendingAndFailed();
     return syncNow(limit: limit, ignoreBackoff: true, pullAfterPush: true);
   }
@@ -176,7 +176,7 @@ class SyncService {
 
     // Recover items that may have been left in SENDING if the app was closed
     // or crashed during a previous sync attempt.
-    await _queueRepo.recoverStaleSendingItems();
+    await _queueRepo.recoverStaleSendingItems(maxAge: const Duration(minutes: 5));
 
     final baseUrl = await _settingsRepo.getBaseUrl();
     final api = ApiClient.create(baseUrl: baseUrl);
@@ -298,12 +298,14 @@ class SyncService {
   }
 
   Future<PullRefreshResult> pullLatestFromServer({
-    int recentChildrenTake = 200,
+    int recentChildrenTake = 500,
     bool includeAppointments = true,
+    bool forceFullClinicalPull = false,
   }) {
     return _pullRefreshService.refreshFromServer(
       recentChildrenTake: recentChildrenTake,
       includeAppointments: includeAppointments,
+      forceFullClinicalPull: forceFullClinicalPull,
     );
   }
 
@@ -355,14 +357,22 @@ class SyncService {
 
   String _friendlySyncError(DioException error) {
     final statusCode = error.response?.statusCode;
-    final dataText = _truncate(_safeStringify(error.response?.data), 600);
+    final dataText = _truncate(_safeStringify(error.response?.data), 800);
 
     if (statusCode == 401) {
-      return 'LOGIN_REQUIRED: Your session expired. Log in again, then tap Sync now. Your unsynced data is still saved on this device.';
+      return 'LOGIN_REQUIRED: Your session expired. Log in again, then tap Sync & Refresh. Your unsynced data is still saved on this device.';
     }
 
     if (statusCode == 403) {
-      return 'FORBIDDEN: Your account does not have permission to sync this record. Contact the system administrator.';
+      return 'NEEDS_REVIEW: Your account/facility does not have permission to sync this record. Contact the system administrator. $dataText';
+    }
+
+    if (statusCode == 400 || statusCode == 404 || statusCode == 409 || statusCode == 422) {
+      return 'NEEDS_REVIEW: Server rejected this record and it will not keep retrying automatically. $dataText';
+    }
+
+    if (statusCode != null && statusCode >= 500) {
+      return 'SERVER_TEMPORARY_ERROR: HTTP $statusCode. The record will retry automatically. $dataText';
     }
 
     if (statusCode != null) {
@@ -373,9 +383,9 @@ class SyncService {
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
-        return 'NETWORK_TIMEOUT: The server took too long to respond. The record will retry.';
+        return 'NETWORK_TIMEOUT: The server took too long to respond. The record will retry automatically.';
       case DioExceptionType.connectionError:
-        return 'NETWORK_ERROR: Could not reach the server. Check internet connection and retry.';
+        return 'NETWORK_ERROR: Could not reach the server. The record will retry automatically when internet is available.';
       default:
         return error.message ?? error.toString();
     }
