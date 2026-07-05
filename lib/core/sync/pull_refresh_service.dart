@@ -68,7 +68,7 @@ class PullRefreshService {
   }
 
   Future<PullRefreshResult> refreshFromServer({
-    int recentChildrenTake = 200,
+    int recentChildrenTake = 500,
     bool includeAppointments = true,
   }) async {
     if (!await isOnline()) return PullRefreshResult.offline;

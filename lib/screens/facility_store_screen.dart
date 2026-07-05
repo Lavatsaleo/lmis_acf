@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 
 import '../core/config/app_config.dart';
+import '../core/session/active_facility_context.dart';
 import '../data/local/auth/session_store.dart';
 import '../data/local/cache/box_cache_repo.dart';
 import '../data/local/clinical/clinical_assessment_repo.dart';
@@ -32,6 +33,7 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
 
   Map<String, dynamic>? _me;
   String? _facilityId;
+  String _facilityCode = '';
   String _facilityLabel = '—';
 
   bool _loading = true;
@@ -49,7 +51,9 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
 
   Future<void> _load() async {
     final me = await _sessionStore.readUserJson();
-    final facilityId = (me?['facilityId'] as String?)?.trim();
+    final ctx = ActiveFacilityScope.fromUser(me);
+    final facilityId = ctx.facilityId.trim().isNotEmpty ? ctx.facilityId.trim() : null;
+    final facilityCode = ctx.facilityCode;
 
     String label = facilityId ?? '—';
     final f = me?['facility'];
@@ -75,6 +79,7 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
     setState(() {
       _me = me;
       _facilityId = facilityId;
+      _facilityCode = facilityCode;
       _facilityLabel = label;
       _serverTotalSachetsRemaining = serverTotal;
       _serverBoxesInStore = serverBoxes;
@@ -275,7 +280,7 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
                           final effectiveRefreshAt = cachedStore?.refreshedAt ?? _lastServerRefreshAt;
 
                           return StreamBuilder(
-                            stream: _assessRepo.watchAll(limit: 5000),
+                            stream: _assessRepo.watchAll(limit: 5000, facilityCode: _facilityCode),
                             builder: (context, assessSnap) {
                               final assessments = assessSnap.data ?? const [];
                               final assessJson = assessments

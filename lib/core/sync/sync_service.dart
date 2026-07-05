@@ -13,6 +13,7 @@ import '../../data/local/cache/box_cache_repo.dart';
 import '../../data/local/auth/session_store.dart';
 import '../../data/remote/api_client.dart';
 import '../config/app_config.dart';
+import '../session/active_facility_context.dart';
 
 class SyncRunResult {
   final int attempted;
@@ -79,6 +80,54 @@ class SyncService {
     return DateTime.now().isAfter(item.lastAttemptAt!.add(wait));
   }
 
+  Future<bool> _queueItemBelongsToActiveFacility(SyncQueueItem item) async {
+    final ctx = await ActiveFacilityScope.read(sessionStore: _sessionStore);
+    final activeCode = ctx.facilityCode.trim();
+    if (activeCode.isEmpty) return true;
+
+    // Non-clinical queue items are handled by backend user/facility permissions.
+    if (!item.entityType.startsWith('clinical_')) return true;
+
+    String? localChildId = item.dependsOnLocalEntityId;
+
+    if (item.entityType == 'clinical_enroll') {
+      localChildId = item.localEntityId;
+    }
+
+    if ((localChildId == null || localChildId.trim().isEmpty) && item.payloadJson != null) {
+      try {
+        final payload = jsonDecode(item.payloadJson!);
+        if (payload is Map && payload['localChildId'] != null) {
+          localChildId = payload['localChildId'].toString();
+        }
+      } catch (_) {
+        // ignore malformed payload
+      }
+    }
+
+    if (localChildId != null && localChildId.trim().isNotEmpty) {
+      final child = await _childRepo.findByLocalId(localChildId.trim());
+      final childFacilityCode = child?.facilityCode?.trim();
+      if (childFacilityCode == null || childFacilityCode.isEmpty) {
+        // Legacy unscoped item: allow it to avoid trapping current users, but new
+        // records are always stamped with facilityCode.
+        return true;
+      }
+      return childFacilityCode.toLowerCase() == activeCode.toLowerCase();
+    }
+
+    // For visit-update items the localEntityId may be an assessment.
+    final assessment = await _assessRepo.findByLocalAssessmentId(item.localEntityId);
+    if (assessment != null) {
+      final child = await _childRepo.findByLocalId(assessment.localChildId);
+      final childFacilityCode = child?.facilityCode?.trim();
+      if (childFacilityCode == null || childFacilityCode.isEmpty) return true;
+      return childFacilityCode.toLowerCase() == activeCode.toLowerCase();
+    }
+
+    return true;
+  }
+
   Future<bool> _dependencyIsReady(SyncQueueItem item) async {
     final dep = item.dependsOnLocalEntityId?.trim();
     if (dep == null || dep.isEmpty) return true;
@@ -94,6 +143,17 @@ class SyncService {
     if (remoteChildId != null && remoteChildId.isNotEmpty) return true;
 
     return false;
+  }
+
+  /// User/manual force sync.
+  ///
+  /// This resets retry windows first, pushes everything eligible for the active
+  /// facility, and then pulls latest server data so other users' work appears
+  /// on this phone.
+  Future<SyncRunResult> forceSyncNow({int limit = 100}) async {
+    await _queueRepo.recoverStaleSendingItems();
+    await _queueRepo.resetRetryWindowsForAllPendingAndFailed();
+    return syncNow(limit: limit, ignoreBackoff: true, pullAfterPush: true);
   }
 
   /// Sync queued items now.
@@ -121,7 +181,13 @@ class SyncService {
     final baseUrl = await _settingsRepo.getBaseUrl();
     final api = ApiClient.create(baseUrl: baseUrl);
 
-    final items = await _queueRepo.listForSync(limit: limit);
+    final rawItems = await _queueRepo.listForSync(limit: limit);
+    final items = <SyncQueueItem>[];
+    for (final item in rawItems) {
+      if (await _queueItemBelongsToActiveFacility(item)) {
+        items.add(item);
+      }
+    }
     int attempted = 0;
     int sent = 0;
     int failed = 0;

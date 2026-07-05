@@ -32,7 +32,7 @@ class _QueueInspectorScreenState extends State<QueueInspectorScreen> {
     if (_syncing) return;
     setState(() => _syncing = true);
     try {
-      final result = await _syncService.syncNow();
+      final result = await _syncService.forceSyncNow();
       if (!mounted) return;
 
       final msg = result.online

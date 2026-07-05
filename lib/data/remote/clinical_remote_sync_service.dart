@@ -7,27 +7,36 @@ import '../local/clinical/clinical_child_repo.dart';
 import '../local/isar/clinical_assessment.dart';
 import '../local/isar/clinical_child.dart';
 import '../local/settings/app_settings_repo.dart';
+import '../local/auth/session_store.dart';
+import '../../core/session/active_facility_context.dart';
 import 'api_client.dart';
 
 class ClinicalRemoteSyncService {
   final ClinicalChildRepo _childRepo;
   final ClinicalAssessmentRepo _assessRepo;
   final AppSettingsRepo _settingsRepo;
+  final SessionStore _sessionStore;
   final Uuid _uuid;
 
   ClinicalRemoteSyncService({
     ClinicalChildRepo? childRepo,
     ClinicalAssessmentRepo? assessRepo,
     AppSettingsRepo? settingsRepo,
+    SessionStore? sessionStore,
     Uuid? uuid,
   })  : _childRepo = childRepo ?? ClinicalChildRepo(),
         _assessRepo = assessRepo ?? ClinicalAssessmentRepo(),
         _settingsRepo = settingsRepo ?? AppSettingsRepo(),
+        _sessionStore = sessionStore ?? SessionStore(),
         _uuid = uuid ?? const Uuid();
 
   Future<ApiClient> _api() async {
     final baseUrl = await _settingsRepo.getBaseUrl();
     return ApiClient.create(baseUrl: baseUrl);
+  }
+
+  Future<ActiveFacilityContext> _activeFacility() {
+    return ActiveFacilityScope.read(sessionStore: _sessionStore);
   }
 
   Future<List<Map<String, dynamic>>> searchChildren(String query) async {
@@ -132,13 +141,19 @@ class ClinicalRemoteSyncService {
     final caregiver = (m['caregiver'] is Map)
         ? (m['caregiver'] as Map).cast<String, dynamic>()
         : const <String, dynamic>{};
+    final facility = (m['facility'] is Map)
+        ? (m['facility'] as Map).cast<String, dynamic>()
+        : (child['facility'] is Map)
+            ? (child['facility'] as Map).cast<String, dynamic>()
+            : const <String, dynamic>{};
+    final activeFacility = await _activeFacility();
 
     final remoteChildId = (child['id'] ?? '').toString().trim();
     if (remoteChildId.isEmpty) {
       throw Exception('Child summary did not contain a remote id.');
     }
 
-    final existing = await _findExistingChild(child, remoteChildId);
+    final existing = await _findExistingChild(child, remoteChildId, activeFacility.facilityCode);
     final localChildId = existing?.localChildId ?? _uuid.v4();
 
     final c = existing ?? ClinicalChild()..localChildId = localChildId;
@@ -163,6 +178,9 @@ class ClinicalRemoteSyncService {
     c.uniqueChildNumber = _stringOrNull(child['uniqueChildNumber']);
     c.chpName = _stringOrNull(child['chpName']);
     c.chpContacts = _stringOrNull(child['chpContacts']);
+    final serverFacilityCode = _stringOrNull(child['facilityCode'] ?? facility['code']);
+    final scopedFacilityCode = serverFacilityCode ?? (activeFacility.facilityCode.isEmpty ? null : activeFacility.facilityCode);
+    c.facilityCode = scopedFacilityCode ?? c.facilityCode;
     c.status = 'SYNCED';
 
     await _childRepo.upsert(c);
@@ -173,19 +191,19 @@ class ClinicalRemoteSyncService {
     return localChildId;
   }
 
-  Future<ClinicalChild?> _findExistingChild(Map<String, dynamic> child, String remoteChildId) async {
-    ClinicalChild? existing = await _childRepo.findByRemoteChildId(remoteChildId);
+  Future<ClinicalChild?> _findExistingChild(Map<String, dynamic> child, String remoteChildId, String facilityCode) async {
+    ClinicalChild? existing = await _childRepo.findByRemoteChildId(remoteChildId, facilityCode: facilityCode);
     if (existing != null) return existing;
 
     final uniqueChildNumber = (child['uniqueChildNumber'] ?? '').toString().trim();
     if (uniqueChildNumber.isNotEmpty) {
-      existing = await _childRepo.findByUniqueChildNumber(uniqueChildNumber);
+      existing = await _childRepo.findByUniqueChildNumber(uniqueChildNumber, facilityCode: facilityCode);
       if (existing != null) return existing;
     }
 
     final cwc = (child['cwcNumber'] ?? '').toString().trim();
     if (cwc.isNotEmpty) {
-      existing = await _childRepo.findByCwcNumber(cwc);
+      existing = await _childRepo.findByCwcNumber(cwc, facilityCode: facilityCode);
       if (existing != null) return existing;
     }
 

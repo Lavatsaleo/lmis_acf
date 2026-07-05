@@ -5,15 +5,15 @@ import 'package:flutter/services.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/session/active_facility_context.dart';
 import '../data/local/auth/session_store.dart';
-import '../data/local/settings/app_settings_repo.dart';
-import '../data/remote/api_client.dart';
 import '../data/local/clinical/clinical_child_repo.dart';
 import '../data/local/isar/clinical_child.dart';
-import 'clinical_child_detail_screen.dart';
-import 'clinical_find_child_screen.dart';
-import 'clinical_enrollment_visit_screen.dart';
+import '../data/local/settings/app_settings_repo.dart';
+import '../data/remote/api_client.dart';
 import '../widgets/acf_brand.dart';
+import 'clinical_child_detail_screen.dart';
+import 'clinical_enrollment_visit_screen.dart';
 
 class ClinicalRegisterChildScreen extends StatefulWidget {
   const ClinicalRegisterChildScreen({super.key});
@@ -53,6 +53,7 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
   final _facilityCode = TextEditingController();
 
   Map<String, dynamic>? _user;
+  Map<String, dynamic>? _duplicateReview;
 
   @override
   void initState() {
@@ -70,6 +71,14 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
   bool get _isSuperAdmin {
     final r = (_user?['role'] ?? '').toString().toUpperCase();
     return r == 'SUPER_ADMIN';
+  }
+
+  ActiveFacilityContext get _facilityContext => ActiveFacilityScope.fromUser(_user);
+
+  String get _effectiveFacilityCode {
+    final manual = _facilityCode.text.trim();
+    if (manual.isNotEmpty) return manual;
+    return _facilityContext.facilityCode;
   }
 
   bool get _needsFacilityCode {
@@ -172,17 +181,20 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
       return;
     }
 
-    // Duplicate prevention (local): CWC number is treated as the unique identifier.
     final cwc = _cwcNumber.text.trim();
+
+    // Same-facility local duplicate: open the existing record. This still lets the
+    // user continue service delivery, but prevents two local records for the same
+    // CWC in the same facility.
     if (cwc.isNotEmpty) {
-      final existing = await _childRepo.findByCwcNumber(cwc);
+      final existing = await _childRepo.findByCwcNumber(cwc, facilityCode: _effectiveFacilityCode);
       if (existing != null) {
         if (!mounted) return;
         await showDialog<void>(
           context: context,
           builder: (_) => AlertDialog(
-            title: const Text('Child already registered'),
-            content: Text('A child with CWC number "$cwc" already exists locally.\n\nOpen the existing record instead of registering again.'),
+            title: const Text('Child already enrolled here'),
+            content: Text('A child with CWC number "$cwc" already exists locally for this facility. Open the existing record and continue from there.'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
@@ -205,69 +217,20 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
         );
         return;
       }
-}
-
-// Duplicate prevention (server): when online, check if this CWC already exists on the backend.
-// This reduces duplicates across devices when local DB is cleared after sync.
-if (cwc.isNotEmpty) {
-  try {
-    final results = await _connectivity.checkConnectivity();
-    final online = !results.contains(ConnectivityResult.none);
-    if (online) {
-      final baseUrl = await _settingsRepo.getBaseUrl();
-      final api = ApiClient.create(baseUrl: baseUrl);
-
-      final resp = await api.request(
-        method: 'GET',
-        path: '/api/clinical/children/search?q=${Uri.encodeQueryComponent(cwc)}',
-      );
-
-      if ((resp.statusCode ?? 0) >= 200 && (resp.statusCode ?? 0) < 300) {
-        final data = resp.data;
-        if (data is List) {
-          final exists = data.any((e) {
-            if (e is Map) {
-              final v = (e['cwcNumber'] ?? '').toString().trim();
-              return v.isNotEmpty && v.toLowerCase() == cwc.toLowerCase();
-            }
-            return false;
-          });
-
-          if (exists && mounted) {
-            await showDialog<void>(
-              context: context,
-              builder: (_) => AlertDialog(
-                title: const Text('Possible duplicate'),
-                content: Text('A child with CWC number "$cwc" already exists on the server.\n\nUse Search to open the existing record instead of registering again.'),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Cancel'),
-                  ),
-                  ElevatedButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const ClinicalFindChildScreen()),
-                      );
-                    },
-                    child: const Text('Search'),
-                  ),
-                ],
-              ),
-            );
-            return;
-          }
-        }
-      }
     }
-  } catch (_) {
-    // If the check fails, we still allow local enrollment (offline-first).
-  }
-}
 
-setState(() => _saving = true);
+    // Cross-facility duplicate check: non-blocking.
+    // If online, show possible matches and let the user choose Same child,
+    // Different child, or Not sure. The answer is stored in the enrollment payload
+    // so the dashboard can review later. If offline/check fails, continue.
+    final duplicateReview = await _runDuplicateCheck();
+    if (!mounted) return;
+    if ((duplicateReview?['status'] ?? '') == 'CANCELLED_AFTER_DUPLICATE_REVIEW') {
+      return;
+    }
+    _duplicateReview = duplicateReview;
+
+    setState(() => _saving = true);
     try {
       final localChildId = _uuid.v4();
       final child = ClinicalChild()
@@ -283,7 +246,7 @@ setState(() => _saving = true);
         ..enrollmentDate = DateTime(_enrollmentDate.year, _enrollmentDate.month, _enrollmentDate.day)
         ..chpName = _chpName.text.trim().isEmpty ? null : _chpName.text.trim()
         ..chpContacts = _chpContacts.text.trim().isEmpty ? null : _chpContacts.text.trim()
-        ..facilityCode = _facilityCode.text.trim().isEmpty ? null : _facilityCode.text.trim()
+        ..facilityCode = _effectiveFacilityCode.isEmpty ? null : _effectiveFacilityCode
         ..status = 'DRAFT'
         ..createdAt = DateTime.now()
         ..updatedAt = DateTime.now();
@@ -310,6 +273,155 @@ setState(() => _saving = true);
     }
   }
 
+  Future<Map<String, dynamic>?> _runDuplicateCheck() async {
+    try {
+      final results = await _connectivity.checkConnectivity();
+      final online = !results.contains(ConnectivityResult.none);
+      if (!online) {
+        return {
+          'status': 'PENDING_SERVER_CHECK',
+          'reason': 'Device was offline during enrollment.',
+          'checkedAt': DateTime.now().toIso8601String(),
+        };
+      }
+
+      final params = <String, String>{
+        if (_cwcNumber.text.trim().isNotEmpty) 'cwcNumber': _cwcNumber.text.trim(),
+        if (_firstName.text.trim().isNotEmpty) 'firstName': _firstName.text.trim(),
+        if (_lastName.text.trim().isNotEmpty) 'lastName': _lastName.text.trim(),
+        if (_dob != null) 'dateOfBirth': _fmtDate(_dob!),
+        if (_sex.trim().isNotEmpty) 'sex': _sex.trim(),
+        if (_caregiverName.text.trim().isNotEmpty) 'caregiverName': _caregiverName.text.trim(),
+        if (_caregiverContacts.text.trim().isNotEmpty) 'caregiverContacts': _caregiverContacts.text.trim(),
+        if (_village.text.trim().isNotEmpty) 'village': _village.text.trim(),
+        if (_effectiveFacilityCode.trim().isNotEmpty) 'facilityCode': _effectiveFacilityCode.trim(),
+      };
+
+      if (params.length <= 1 && !params.containsKey('cwcNumber')) return null;
+
+      final baseUrl = await _settingsRepo.getBaseUrl();
+      final api = ApiClient.create(baseUrl: baseUrl);
+      final query = Uri(queryParameters: params).query;
+
+      final resp = await api.request(
+        method: 'GET',
+        path: '/api/clinical/children/duplicate-check?$query',
+      );
+
+      final statusCode = resp.statusCode ?? 0;
+      if (statusCode < 200 || statusCode >= 300) return null;
+
+      final data = resp.data;
+      final matches = _extractDuplicateMatches(data);
+      if (matches.isEmpty) {
+        return {
+          'status': 'CHECKED_NO_MATCH',
+          'checkedAt': DateTime.now().toIso8601String(),
+        };
+      }
+
+      if (!mounted) return null;
+      final decision = await _showDuplicateDialog(matches);
+      if (decision == null) {
+        return {
+          'status': 'CANCELLED_AFTER_DUPLICATE_REVIEW',
+          'checkedAt': DateTime.now().toIso8601String(),
+          'candidateCount': matches.length,
+          'candidateIds': matches.map((m) => (m['childId'] ?? m['id'] ?? '').toString()).where((v) => v.isNotEmpty).take(10).toList(),
+        };
+      }
+
+      return {
+        'status': 'POSSIBLE_DUPLICATE_REVIEWED_ON_MOBILE',
+        'userDecision': decision,
+        'checkedAt': DateTime.now().toIso8601String(),
+        'candidateCount': matches.length,
+        'candidateIds': matches.map((m) => (m['childId'] ?? m['id'] ?? '').toString()).where((v) => v.isNotEmpty).take(10).toList(),
+        'topCandidate': _compactDuplicateCandidate(matches.first),
+      };
+    } catch (_) {
+      // Never block enrollment because duplicate check failed. This is an offline-first service delivery app.
+      return {
+        'status': 'PENDING_SERVER_CHECK',
+        'reason': 'Duplicate check failed or timed out.',
+        'checkedAt': DateTime.now().toIso8601String(),
+      };
+    }
+  }
+
+  List<Map<String, dynamic>> _extractDuplicateMatches(dynamic data) {
+    dynamic raw;
+    if (data is Map) raw = data['matches'];
+    if (raw == null && data is List) raw = data;
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => e.cast<String, dynamic>())
+        .where((m) => ((m['score'] as num?)?.toDouble() ?? 0) >= 25)
+        .take(5)
+        .toList();
+  }
+
+  Map<String, dynamic> _compactDuplicateCandidate(Map<String, dynamic> m) {
+    return {
+      'childId': (m['childId'] ?? m['id'] ?? '').toString(),
+      'facilityName': (m['facilityName'] ?? '').toString(),
+      'facilityCode': (m['facilityCode'] ?? '').toString(),
+      'childName': (m['childName'] ?? '').toString(),
+      'cwcNumber': (m['cwcNumber'] ?? '').toString(),
+      'dateOfBirth': (m['dateOfBirth'] ?? '').toString(),
+      'sex': (m['sex'] ?? '').toString(),
+      'score': m['score'],
+      'reasons': m['reasons'],
+    };
+  }
+
+  Future<String?> _showDuplicateDialog(List<Map<String, dynamic>> matches) async {
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Possible duplicate found'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'The system found a child with similar details. Review the details below. You can still continue recording services; this will be flagged for dashboard review.',
+                  ),
+                  const SizedBox(height: 12),
+                  for (final match in matches.take(3)) _DuplicateCandidateCard(match: match),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, null),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'DIFFERENT_CHILD'),
+              child: const Text('Different child'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'NOT_SURE'),
+              child: const Text('Not sure'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, 'SAME_CHILD'),
+              child: const Text('Same child'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   /// Base enrollment payload. The next screen adds the simple enrollment visit and queues the enrollment.
   Map<String, dynamic> _buildEnrollPayload(ClinicalChild c) {
     String fmt(DateTime d) {
@@ -332,6 +444,7 @@ setState(() => _saving = true);
       'chpName': c.chpName,
       'chpContacts': c.chpContacts,
       if (c.facilityCode != null && c.facilityCode!.isNotEmpty) 'facilityCode': c.facilityCode,
+      if (_duplicateReview != null) 'duplicateReview': _duplicateReview,
     };
   }
 
@@ -348,6 +461,20 @@ setState(() => _saving = true);
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              _Section(title: 'Enrollment'),
+              _DatePickerTile(
+                icon: Icons.event_available_outlined,
+                label: 'Enrollment date',
+                value: _fmtDate(_enrollmentDate),
+                onTap: _pickEnrollmentDate,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Use the actual date the child entered the programme. This can be backdated for paper records.',
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant, fontWeight: FontWeight.w700),
+              ),
+
+              const SizedBox(height: 16),
               _Section(title: 'Caregiver'),
               TextFormField(
                 controller: _caregiverName,
@@ -403,61 +530,11 @@ setState(() => _saving = true);
                 decoration: const InputDecoration(labelText: 'Sex'),
               ),
               const SizedBox(height: 10),
-              InkWell(
+              _DatePickerTile(
+                icon: Icons.cake_outlined,
+                label: 'Date of birth *',
+                value: _dob == null ? 'Tap to pick' : _fmtDate(_dob!),
                 onTap: _pickDob,
-                borderRadius: BorderRadius.circular(12),
-                child: Ink(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: cs.outlineVariant),
-                    color: cs.surface,
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.cake_outlined, size: 18),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          _dob == null ? 'Date of birth * (tap to pick)' : 'DOB: ${_fmtDate(_dob!)}',
-                          style: TextStyle(color: cs.onSurface),
-                        ),
-                      ),
-                      const Icon(Icons.edit_calendar),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              InkWell(
-                onTap: _pickEnrollmentDate,
-                borderRadius: BorderRadius.circular(12),
-                child: Ink(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: cs.outlineVariant),
-                    color: cs.surface,
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.event_available_outlined, size: 18),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Enrollment date: ${_fmtDate(_enrollmentDate)}',
-                          style: TextStyle(color: cs.onSurface),
-                        ),
-                      ),
-                      const Icon(Icons.edit_calendar),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Use the actual date the child entered the programme. This can be backdated for paper records.',
-                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 10),
               TextFormField(
@@ -518,6 +595,113 @@ setState(() => _saving = true);
     final m = d.month.toString().padLeft(2, '0');
     final day = d.day.toString().padLeft(2, '0');
     return '$y-$m-$day';
+  }
+}
+
+class _DatePickerTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final VoidCallback onTap;
+
+  const _DatePickerTile({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Ink(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: cs.outlineVariant),
+          color: cs.surface,
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '$label: $value',
+                style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w800),
+              ),
+            ),
+            const Icon(Icons.edit_calendar),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DuplicateCandidateCard extends StatelessWidget {
+  final Map<String, dynamic> match;
+
+  const _DuplicateCandidateCard({required this.match});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final reasons = match['reasons'];
+    final reasonsText = reasons is List ? reasons.map((e) => e.toString()).join(', ') : reasons?.toString() ?? '';
+
+    String value(String key) => (match[key] ?? '').toString().trim();
+
+    final childName = value('childName').isNotEmpty
+        ? value('childName')
+        : '${value('firstName')} ${value('lastName')}'.trim();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withOpacity(0.45),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  childName.isEmpty ? 'Possible matching child' : childName,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+              if (match['score'] != null)
+                Text('Score ${match['score']}', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          _kv('Facility', [value('facilityName'), value('facilityCode')].where((v) => v.isNotEmpty).join(' • ')),
+          _kv('CWC number', value('cwcNumber')),
+          _kv('Sex / DOB', [value('sex'), value('dateOfBirth')].where((v) => v.isNotEmpty).join(' • ')),
+          _kv('Caregiver', [value('caregiverName'), value('caregiverContactsMasked')].where((v) => v.isNotEmpty).join(' • ')),
+          _kv('Village', value('village')),
+          _kv('Last visit', value('lastVisitDate')),
+          _kv('Last dispense', value('lastSachetsDispensed').isEmpty ? '' : '${value('lastSachetsDispensed')} sachets'),
+          if (reasonsText.isNotEmpty) _kv('Why flagged', reasonsText),
+        ],
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    if (v.trim().isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 3),
+      child: Text('$k: $v'),
+    );
   }
 }
 

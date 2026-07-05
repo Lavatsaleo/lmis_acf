@@ -12,6 +12,7 @@ import 'queue_inspector_screen.dart';
 import '../widgets/acf_brand.dart';
 import '../widgets/acf_tiles.dart';
 import '../core/sync/sync_service.dart';
+import '../core/session/active_facility_context.dart';
 import '../data/remote/clinical_remote_sync_service.dart';
 
 class ClinicalHomeScreen extends StatefulWidget {
@@ -29,6 +30,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
 
   Map<String, dynamic>? _user;
   String? _role;
+  String _facilityCode = '';
 
   final ClinicalRemoteSyncService _remoteSync = ClinicalRemoteSyncService();
 
@@ -49,6 +51,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
     setState(() {
       _user = user;
       _role = (user?['role'] ?? '').toString().toUpperCase();
+      _facilityCode = ActiveFacilityScope.fromUser(user).facilityCode;
       _loading = false;
     });
     await _refreshFacilityActivity();
@@ -114,7 +117,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
             tooltip: 'Sync now',
             icon: const Icon(Icons.sync),
             onPressed: () async {
-              final result = await _syncService.syncNow();
+              final result = await _syncService.forceSyncNow();
               await _refreshFacilityActivity();
               if (!context.mounted) return;
               final msg = result.online
@@ -203,7 +206,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
               children: [
                 Expanded(
                   child: FutureBuilder<int>(
-                    future: _childRepo.countDraftOrQueued(),
+                    future: _childRepo.countDraftOrQueued(facilityCode: _facilityCode),
                     builder: (context, snap) {
                       final v = snap.data ?? 0;
                       return _StatPill(label: 'Local children', value: '$v');
@@ -213,7 +216,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FutureBuilder<int>(
-                    future: _assessRepo.countDraftOrQueued(),
+                    future: _assessRepo.countDraftOrQueued(facilityCode: _facilityCode),
                     builder: (context, snap) {
                       final v = snap.data ?? 0;
                       return _StatPill(label: 'Local visits', value: '$v');
@@ -278,7 +281,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
                           },
                         )
                       : StreamBuilder<List<ClinicalChild>>(
-                          stream: _childRepo.watchAll(limit: 50),
+                          stream: _childRepo.watchAll(limit: 50, facilityCode: _facilityCode),
                           builder: (context, snapshot) {
                             final items = snapshot.data ?? const <ClinicalChild>[];
 

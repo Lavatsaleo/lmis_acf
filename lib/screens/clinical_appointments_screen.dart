@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../data/local/clinical/clinical_assessment_repo.dart';
+import '../data/local/auth/session_store.dart';
+import '../core/session/active_facility_context.dart';
 import '../data/local/clinical/clinical_child_repo.dart';
 import '../data/local/isar/clinical_assessment.dart';
 import '../data/local/isar/clinical_child.dart';
@@ -19,6 +21,7 @@ class ClinicalAppointmentsScreen extends StatefulWidget {
 
 class _ClinicalAppointmentsScreenState extends State<ClinicalAppointmentsScreen> {
   final _childRepo = ClinicalChildRepo();
+  final _sessionStore = SessionStore();
   final _assessRepo = ClinicalAssessmentRepo();
   final _remoteSync = ClinicalRemoteSyncService();
 
@@ -26,11 +29,20 @@ class _ClinicalAppointmentsScreenState extends State<ClinicalAppointmentsScreen>
   bool _loading = true;
   bool _usingLocalFallback = false;
   List<_ApptRow> _rows = const [];
+  String _facilityCode = '';
 
   @override
   void initState() {
     super.initState();
-    _loadRows();
+    _loadFacilityThenRows();
+  }
+
+
+  Future<void> _loadFacilityThenRows() async {
+    final ctx = await ActiveFacilityScope.read(sessionStore: _sessionStore);
+    if (!mounted) return;
+    setState(() => _facilityCode = ctx.facilityCode);
+    await _loadRows();
   }
 
   Future<void> _loadRows() async {
@@ -45,7 +57,7 @@ class _ClinicalAppointmentsScreenState extends State<ClinicalAppointmentsScreen>
             ? (child['caregiver'] as Map).cast<String, dynamic>()
             : const <String, dynamic>{};
         final remoteId = (child['id'] ?? '').toString().trim();
-        final existing = remoteId.isEmpty ? null : await _childRepo.findByRemoteChildId(remoteId);
+        final existing = remoteId.isEmpty ? null : await _childRepo.findByRemoteChildId(remoteId, facilityCode: _facilityCode);
         rows.add(
           _ApptRow(
             localChildId: existing?.localChildId,
@@ -72,7 +84,7 @@ class _ClinicalAppointmentsScreenState extends State<ClinicalAppointmentsScreen>
       // fall back to local cache below
     }
 
-    final children = await _childRepo.listAll(limit: 5000);
+    final children = await _childRepo.listAll(limit: 5000, facilityCode: _facilityCode);
     final rows = await _buildRowsForDate(children, _selectedDate);
 
     if (!mounted) return;
@@ -122,7 +134,7 @@ class _ClinicalAppointmentsScreenState extends State<ClinicalAppointmentsScreen>
                       lastDate: DateTime(today.year + 2, 12, 31),
                       onDateChanged: (d) {
                         setState(() => _selectedDate = d);
-                        _loadRows();
+                        _loadFacilityThenRows();
                       },
                     ),
                   ),

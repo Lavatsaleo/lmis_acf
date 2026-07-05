@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../data/local/clinical/clinical_child_repo.dart';
+import '../data/local/auth/session_store.dart';
+import '../core/session/active_facility_context.dart';
 import '../data/local/settings/app_settings_repo.dart';
 import '../data/remote/api_client.dart';
 import '../data/remote/clinical_remote_sync_service.dart';
@@ -17,6 +19,7 @@ class ClinicalFindChildScreen extends StatefulWidget {
 
 class _ClinicalFindChildScreenState extends State<ClinicalFindChildScreen> {
   final _repo = ClinicalChildRepo();
+  final _sessionStore = SessionStore();
   final _settingsRepo = AppSettingsRepo();
   final _connectivity = Connectivity();
   final _remoteSync = ClinicalRemoteSyncService();
@@ -27,12 +30,21 @@ class _ClinicalFindChildScreenState extends State<ClinicalFindChildScreen> {
   bool _loading = false;
   List<ClinicalChild> _results = const [];
   List<Map<String, dynamic>> _remote = const [];
+  String _facilityCode = '';
 
 
   @override
   void initState() {
     super.initState();
-    _search('');
+    _loadFacilityThenSearch();
+  }
+
+
+  Future<void> _loadFacilityThenSearch() async {
+    final ctx = await ActiveFacilityScope.read(sessionStore: _sessionStore);
+    if (!mounted) return;
+    setState(() => _facilityCode = ctx.facilityCode);
+    await _search('');
   }
 
   @override
@@ -46,7 +58,7 @@ Future<void> _search(String query) async {
   setState(() => _loading = true);
   try {
     if (_mode == 0) {
-      final list = await _repo.search(query, limit: 50);
+      final list = await _repo.search(query, limit: 50, facilityCode: _facilityCode);
       if (!mounted) return;
       setState(() {
         _results = list;
@@ -148,7 +160,7 @@ Future<void> _importRemote(Map<String, dynamic> remote) async {
                         icon: const Icon(Icons.clear),
                         onPressed: () {
                           _q.clear();
-                          _search('');
+                          _loadFacilityThenSearch();
                           setState(() {});
                         },
                       ),
