@@ -54,6 +54,9 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
 
   Map<String, dynamic>? _user;
   Map<String, dynamic>? _duplicateReview;
+  bool _submitted = false;
+  String? _dobError;
+  String? _enrollmentDateError;
 
   @override
   void initState() {
@@ -114,6 +117,8 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
     if (picked == null) return;
     setState(() {
       _dob = picked;
+      _dobError = null;
+      _enrollmentDateError = null;
       if (_enrollmentDate.isBefore(picked)) {
         _enrollmentDate = DateTime(picked.year, picked.month, picked.day);
       }
@@ -139,7 +144,39 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
       lastDate: today,
     );
     if (picked == null) return;
-    setState(() => _enrollmentDate = picked);
+    setState(() {
+      _enrollmentDate = picked;
+      _enrollmentDateError = null;
+    });
+  }
+
+  bool _validateDateFields() {
+    final now = DateTime.now();
+    final todayDay = DateTime(now.year, now.month, now.day);
+    final enrollmentDay = DateTime(_enrollmentDate.year, _enrollmentDate.month, _enrollmentDate.day);
+
+    String? dobError;
+    String? enrollmentError;
+
+    if (_dob == null) {
+      dobError = 'Date of birth is required.';
+    } else {
+      final dobDay = DateTime(_dob!.year, _dob!.month, _dob!.day);
+      if (enrollmentDay.isBefore(dobDay)) {
+        enrollmentError = 'Enrollment date cannot be before date of birth.';
+      }
+    }
+
+    if (enrollmentDay.isAfter(todayDay)) {
+      enrollmentError = 'Enrollment date cannot be in the future.';
+    }
+
+    setState(() {
+      _dobError = dobError;
+      _enrollmentDateError = enrollmentError;
+    });
+
+    return dobError == null && enrollmentError == null;
   }
 
   int _ageInMonths(DateTime dob, DateTime onDate) {
@@ -151,26 +188,14 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
 
   Future<void> _continueToEnrollmentVisit() async {
     if (_saving) return;
-    if (!(_formKey.currentState?.validate() ?? false)) return;
-    if (_dob == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select Date of Birth')));
-      return;
-    }
+
+    setState(() => _submitted = true);
+
+    final formOk = _formKey.currentState?.validate() ?? false;
+    final datesOk = _validateDateFields();
+    if (!formOk || !datesOk) return;
 
     final enrollmentDay = DateTime(_enrollmentDate.year, _enrollmentDate.month, _enrollmentDate.day);
-    final today = DateTime.now();
-    final todayDay = DateTime(today.year, today.month, today.day);
-    final dobDay = DateTime(_dob!.year, _dob!.month, _dob!.day);
-
-    if (enrollmentDay.isAfter(todayDay)) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enrollment date cannot be in the future')));
-      return;
-    }
-
-    if (enrollmentDay.isBefore(dobDay)) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enrollment date cannot be before date of birth')));
-      return;
-    }
 
     // Programme eligibility: only children 6–23 months are eligible for enrollment.
     final ageMonths = _ageInMonths(_dob!, enrollmentDay);
@@ -458,14 +483,16 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
         padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
+          autovalidateMode: _submitted ? AutovalidateMode.onUserInteraction : AutovalidateMode.disabled,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _Section(title: 'Enrollment'),
               _DatePickerTile(
                 icon: Icons.event_available_outlined,
-                label: 'Enrollment date',
+                label: 'Enrollment date *',
                 value: _fmtDate(_enrollmentDate),
+                errorText: _enrollmentDateError,
                 onTap: _pickEnrollmentDate,
               ),
               const SizedBox(height: 6),
@@ -489,7 +516,8 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
                   FilteringTextInputFormatter.digitsOnly,
                   LengthLimitingTextInputFormatter(15),
                 ],
-                decoration: const InputDecoration(labelText: 'Caregiver contacts (phone)'),
+                decoration: const InputDecoration(labelText: 'Caregiver contacts (phone) *'),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Caregiver contact is required' : null,
               ),
               const SizedBox(height: 10),
               TextFormField(
@@ -527,19 +555,21 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
                   DropdownMenuItem(value: 'UNKNOWN', child: Text('Unknown')),
                 ],
                 onChanged: (v) => setState(() => _sex = v ?? 'UNKNOWN'),
-                decoration: const InputDecoration(labelText: 'Sex'),
+                decoration: const InputDecoration(labelText: 'Sex *'),
               ),
               const SizedBox(height: 10),
               _DatePickerTile(
                 icon: Icons.cake_outlined,
                 label: 'Date of birth *',
                 value: _dob == null ? 'Tap to pick' : _fmtDate(_dob!),
+                errorText: _dobError,
                 onTap: _pickDob,
               ),
               const SizedBox(height: 10),
               TextFormField(
                 controller: _cwcNumber,
-                decoration: const InputDecoration(labelText: 'CWC number'),
+                decoration: const InputDecoration(labelText: 'CWC number *'),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'CWC number is required' : null,
               ),
 
               const SizedBox(height: 16),
@@ -603,41 +633,61 @@ class _DatePickerTile extends StatelessWidget {
   final String label;
   final String value;
   final VoidCallback onTap;
+  final String? errorText;
 
   const _DatePickerTile({
     required this.icon,
     required this.label,
     required this.value,
     required this.onTap,
+    this.errorText,
   });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Ink(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-        decoration: BoxDecoration(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          onTap: onTap,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: cs.outlineVariant),
-          color: cs.surface,
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 18),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                '$label: $value',
-                style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w800),
-              ),
+          child: Ink(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: errorText == null ? cs.outlineVariant : cs.error),
+              color: cs.surface,
             ),
-            const Icon(Icons.edit_calendar),
-          ],
+            child: Row(
+              children: [
+                Icon(icon, size: 18, color: errorText == null ? null : cs.error),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '$label: $value',
+                    style: TextStyle(
+                      color: errorText == null ? cs.onSurface : cs.error,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const Icon(Icons.edit_calendar),
+              ],
+            ),
+          ),
         ),
-      ),
+        if (errorText != null) ...[
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.only(left: 12),
+            child: Text(
+              errorText!,
+              style: TextStyle(color: cs.error, fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

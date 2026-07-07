@@ -77,13 +77,13 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
       return const Scaffold(body: Center(child: Text('Child not found')));
     }
 
-    final canEditSyncedChild = (child.remoteChildId ?? '').trim().isNotEmpty && child.status == 'SYNCED';
+    final canEditChildDetails = true;
 
     return Scaffold(
       appBar: AcfAppBar(
         title: 'Child details',
         actions: [
-          if (canEditSyncedChild)
+          if (canEditChildDetails)
             IconButton(
               tooltip: 'Edit child details',
               onPressed: () async {
@@ -139,7 +139,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                   Text('Caregiver: ${child.caregiverName}', style: const TextStyle(fontWeight: FontWeight.w800)),
                   if ((child.caregiverContacts).isNotEmpty) Text('Contacts: ${child.caregiverContacts}'),
                   if ((child.village ?? '').isNotEmpty) Text('Village: ${child.village}'),
-                  if (canEditSyncedChild) ...[
+                  if (canEditChildDetails) ...[
                     const SizedBox(height: 12),
                     Align(
                       alignment: Alignment.centerLeft,
@@ -160,7 +160,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
                           }
                         },
                         icon: const Icon(Icons.edit_outlined),
-                        label: const Text('Edit synced child details'),
+                        label: const Text('Edit enrollment details'),
                       ),
                     ),
                   ],
