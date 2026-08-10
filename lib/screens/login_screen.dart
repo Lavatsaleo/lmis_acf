@@ -56,11 +56,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
     final currentFacility = _valueFrom(currentUser, [
       'facilityId',
+      'implementationId',
       'facilityCode',
       'facilityName',
     ]).toLowerCase();
     final newFacility = _valueFrom(newUser, [
       'facilityId',
+      'implementationId',
       'facilityCode',
       'facilityName',
     ]).toLowerCase();

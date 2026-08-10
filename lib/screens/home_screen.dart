@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/local/auth/session_store.dart';
+import '../core/platform/platform_context.dart';
 import 'clinical_home_screen.dart';
 import 'warehouse_screen.dart';
 import '../widgets/acf_brand.dart';
@@ -52,11 +53,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final fullName = (_me?['fullName'] ?? _me?['name'] ?? '').toString().trim();
     final email = (_me?['email'] ?? '').toString().trim();
     final role = (_me?['role'] ?? '').toString().trim();
+    final platform = PlatformContext.fromUserJson(_me);
 
-    // NOTE: We still show both modules to match your request.
-    // But we can disable actions based on role (optional).
-    final canWarehouse = role == 'WAREHOUSE_OFFICER' || role == 'FACILITY_OFFICER' || role == 'SUPER_ADMIN';
-    final canClinical = role == 'CLINICIAN' || role == 'FACILITY_OFFICER' || role == 'SUPER_ADMIN';
+    final logisticsEnabled = platform.isModuleEnabled('LOGISTICS');
+    final clinicalEnabled = platform.isModuleEnabled('CLINICAL');
+
+    // Role controls what this user can do inside an enabled implementation.
+    // The implementation controls whether that module exists at all.
+    final canWarehouse = logisticsEnabled &&
+        (role == 'WAREHOUSE_OFFICER' || role == 'FACILITY_OFFICER' || role == 'SUPER_ADMIN');
+    final canClinical = clinicalEnabled &&
+        (role == 'CLINICIAN' || role == 'FACILITY_OFFICER' || role == 'SUPER_ADMIN');
 
     return Scaffold(
       appBar: const AcfAppBar(title: 'Dashboard'),
@@ -98,6 +105,19 @@ class _HomeScreenState extends State<HomeScreen> {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
+                        if (platform.displayName.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            platform.displayName,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: cs.primary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -112,28 +132,42 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 8),
 
-          AcfActionTile(
-            title: 'Warehouse',
-            subtitle: 'Receive, dispatch, box lookup, offline cache + sync queue.',
-            icon: Icons.warehouse_outlined,
-            enabled: canWarehouse,
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const WarehouseScreen()),
+          if (logisticsEnabled) ...[
+            AcfActionTile(
+              title: 'Warehouse',
+              subtitle: 'Receive, dispatch, box lookup, offline cache + sync queue.',
+              icon: Icons.warehouse_outlined,
+              enabled: canWarehouse,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const WarehouseScreen()),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
+            const SizedBox(height: 12),
+          ],
 
-          AcfActionTile(
-            title: 'Clinical',
-            subtitle: 'Child enrollment, anthropometry, dispensing and follow-ups.',
-            icon: Icons.medical_services_outlined,
-            enabled: canClinical,
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ClinicalHomeScreen()),
+          if (clinicalEnabled)
+            AcfActionTile(
+              title: 'Clinical',
+              subtitle: 'Child enrollment, anthropometry, dispensing and follow-ups.',
+              icon: Icons.medical_services_outlined,
+              enabled: canClinical,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ClinicalHomeScreen()),
+              ),
             ),
-          ),
+
+          if (!logisticsEnabled && !clinicalEnabled)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'No currently supported mobile modules are enabled for this implementation.',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+              ),
+            ),
 
           const SizedBox(height: 14),
           Card(
