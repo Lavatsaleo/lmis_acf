@@ -81,6 +81,12 @@ class BoxCacheRepo {
 
         final expRaw = (row['expiryDate'] ?? '').toString().trim();
         b.expiryDate = expRaw.isEmpty ? null : DateTime.tryParse(expRaw);
+
+        final perBox = row['sachetsPerBox'];
+        final remaining = row['sachetsRemaining'];
+        if (perBox is num) b.sachetsPerBox = perBox.round();
+        if (remaining is num) b.sachetsRemaining = remaining.round();
+
         b.updatedAt = DateTime.now();
         upserts.add(b);
       }

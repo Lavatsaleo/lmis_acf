@@ -8,6 +8,7 @@ import '../local/isar/clinical_assessment.dart';
 import '../local/isar/clinical_child.dart';
 import '../local/settings/app_settings_repo.dart';
 import '../local/auth/session_store.dart';
+import '../local/sync/sync_queue_repo.dart';
 import '../../core/session/active_facility_context.dart';
 import 'api_client.dart';
 
@@ -16,6 +17,7 @@ class ClinicalRemoteSyncService {
   final ClinicalAssessmentRepo _assessRepo;
   final AppSettingsRepo _settingsRepo;
   final SessionStore _sessionStore;
+  final SyncQueueRepo _queueRepo;
   final Uuid _uuid;
 
   ClinicalRemoteSyncService({
@@ -23,11 +25,13 @@ class ClinicalRemoteSyncService {
     ClinicalAssessmentRepo? assessRepo,
     AppSettingsRepo? settingsRepo,
     SessionStore? sessionStore,
+    SyncQueueRepo? queueRepo,
     Uuid? uuid,
   })  : _childRepo = childRepo ?? ClinicalChildRepo(),
         _assessRepo = assessRepo ?? ClinicalAssessmentRepo(),
         _settingsRepo = settingsRepo ?? AppSettingsRepo(),
         _sessionStore = sessionStore ?? SessionStore(),
+        _queueRepo = queueRepo ?? SyncQueueRepo(),
         _uuid = uuid ?? const Uuid();
 
   Future<ApiClient> _api() async {
@@ -90,12 +94,16 @@ class ClinicalRemoteSyncService {
   /// returns children whose visits were edited by another phone.
   Future<Map<String, dynamic>> fetchFacilitySyncDelta({
     DateTime? since,
+    String? sinceId,
     int take = 500,
   }) async {
     final api = await _api();
     final qs = <String>['take=$take'];
     if (since != null) {
       qs.add('since=${Uri.encodeQueryComponent(since.toUtc().toIso8601String())}');
+      if (sinceId != null && sinceId.trim().isNotEmpty) {
+        qs.add('sinceId=${Uri.encodeQueryComponent(sinceId.trim())}');
+      }
     }
 
     final resp = await api.request(
@@ -178,6 +186,16 @@ class ClinicalRemoteSyncService {
     final existing = await _findExistingChild(child, remoteChildId, activeFacility.facilityCode);
     final localChildId = existing?.localChildId ?? _uuid.v4();
 
+    // An offline edit (or enrollment) for this child is still waiting to sync:
+    // keep the local version instead of reverting it to the server copy. It is
+    // refreshed on the first pull after the queued change has been sent.
+    // Visits and assessments are still imported, each with its own check.
+    if (existing != null && await _queueRepo.hasUnsentForEntity(existing.localChildId)) {
+      await _importAssessments(localChildId: localChildId, summary: m);
+      await _importVisits(localChildId: localChildId, summary: m);
+      return localChildId;
+    }
+
     final c = existing ?? ClinicalChild()..localChildId = localChildId;
     c.createdAt = existing?.createdAt ?? DateTime.now();
     c.updatedAt = DateTime.now();
@@ -220,16 +238,30 @@ class ClinicalRemoteSyncService {
     final uniqueChildNumber = (child['uniqueChildNumber'] ?? '').toString().trim();
     if (uniqueChildNumber.isNotEmpty) {
       existing = await _childRepo.findByUniqueChildNumber(uniqueChildNumber, facilityCode: facilityCode);
-      if (existing != null) return existing;
+      if (existing != null && _canAdoptLocalChild(existing, remoteChildId)) return existing;
     }
 
     final cwc = (child['cwcNumber'] ?? '').toString().trim();
     if (cwc.isNotEmpty) {
       existing = await _childRepo.findByCwcNumber(cwc, facilityCode: facilityCode);
-      if (existing != null) return existing;
+      if (existing != null && _canAdoptLocalChild(existing, remoteChildId)) return existing;
     }
 
     return null;
+  }
+
+  /// Whether a local child matched only by registration/CWC number may be
+  /// overwritten with this server child.
+  ///
+  /// - Linked to a different server child: no, they are different children.
+  /// - Not yet synced (DRAFT/QUEUED): no. Its enrollment is still in the queue
+  ///   and the server decides whether it is a replay or a conflict; overwriting
+  ///   it here would silently drop the local enrollment data.
+  /// - Synced but never linked (older app builds): yes, adopt it.
+  bool _canAdoptLocalChild(ClinicalChild local, String remoteChildId) {
+    final linked = (local.remoteChildId ?? '').trim();
+    if (linked.isNotEmpty) return linked == remoteChildId;
+    return local.status == 'SYNCED';
   }
 
   Future<void> _importAssessments({
@@ -246,6 +278,8 @@ class ClinicalRemoteSyncService {
 
       final remoteAssessmentId = (a['id'] ?? '').toString().trim();
       final existingA = remoteAssessmentId.isEmpty ? null : await _assessRepo.findByRemoteAssessmentId(remoteAssessmentId);
+      // Unsent local edit of this assessment: keep it.
+      if (existingA != null && await _queueRepo.hasUnsentForEntity(existingA.localAssessmentId)) continue;
 
       final assessmentDate = _parseDt(a['assessmentDate'] ?? a['assessedAt'] ?? a['createdAt']) ?? DateTime.now();
       final assessmentType = (a['assessmentType'] ?? '').toString().toUpperCase();
@@ -295,6 +329,8 @@ class ClinicalRemoteSyncService {
         // Backward compatibility for phones that stored raw visit ids before the visit: prefix fix.
         existingV ??= await _assessRepo.findByRemoteAssessmentId(visitRemoteIdRaw);
       }
+      // Unsent local edit of this visit: keep it.
+      if (existingV != null && await _queueRepo.hasUnsentForEntity(existingV.localAssessmentId)) continue;
 
       int sachets = 0;
       final disp = v['dispenses'];

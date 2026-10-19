@@ -3,10 +3,18 @@
 /// The mobile app now uses a single built-in backend endpoint.
 /// End users can no longer change it from the UI.
 class AppConfig {
-  /// Built-in backend base URL.
+  /// Built-in backend base URL (must end with a slash).
   ///
-  /// Replace this with your production HTTPS endpoint once before building.
-  static const String defaultBaseUrl = 'https://aahdms.actionagainsthunger.org/lmisbackend/';
+  /// Production by default. A test build can point at another server without
+  /// code changes:
+  ///   flutter build apk --dart-define=API_BASE_URL=http://192.168.12.177:4000/
+  static const String defaultBaseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'https://aahdms.actionagainsthunger.org/lmisbackend/',
+  );
+
+  /// True when this build talks to a non-production server (test builds).
+  static const bool isTestServer = bool.hasEnvironment('API_BASE_URL');
 
   /// Optional login endpoint (you can change later to match your backend).
   static const String defaultLoginPath = '/api/auth/login';

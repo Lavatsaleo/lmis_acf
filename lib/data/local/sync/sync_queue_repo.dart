@@ -127,6 +127,22 @@ class SyncQueueRepo {
     return error.startsWith('NEEDS_REVIEW:');
   }
 
+  /// True when the local record still has a queued request that has not been
+  /// sent (pending, sending, or failed, including NEEDS_REVIEW). Server data
+  /// pulled for such a record must not overwrite it, or the user's unsent
+  /// change disappears from the screen.
+  Future<bool> hasUnsentForEntity(String localEntityId) async {
+    final id = localEntityId.trim();
+    if (id.isEmpty) return false;
+    final found = await _isar.syncQueueItems
+        .filter()
+        .localEntityIdEqualTo(id)
+        .not()
+        .statusEqualTo(SyncStatus.sent)
+        .findFirst();
+    return found != null;
+  }
+
   Future<bool> isLocalEntitySynced(String localEntityId) async {
     final found = await _isar.syncQueueItems
         .filter()
@@ -170,24 +186,35 @@ class SyncQueueRepo {
     });
   }
 
-  Future<void> markAsSending(String queueId) async {
-    final item = await _isar.syncQueueItems.filter().queueIdEqualTo(queueId).findFirst();
-    if (item == null) return;
-    await _isar.writeTxn(() async {
+  /// Atomically move an item from pending/failed to SENDING.
+  ///
+  /// Several sync runs can overlap: a screen calling syncNow right after saving,
+  /// AutoSyncService reacting to the same queue change, and the WorkManager job
+  /// in another isolate. Isar serialises write transactions (across isolates
+  /// too), so re-reading the status inside one means exactly one run wins the
+  /// item and the others skip it instead of sending a duplicate request.
+  Future<bool> tryClaimForSending(String queueId) async {
+    return _isar.writeTxn(() async {
+      final item = await _isar.syncQueueItems.filter().queueIdEqualTo(queueId).findFirst();
+      if (item == null) return false;
+      if (item.status != SyncStatus.pending && item.status != SyncStatus.failed) return false;
       item.status = SyncStatus.sending;
       item.lastAttemptAt = DateTime.now();
       await _isar.syncQueueItems.put(item);
+      return true;
     });
   }
 
+  /// Only an item still in SENDING is updated: if it was edited (re-queued as
+  /// pending) while the request was in flight, the newer payload must still go out.
   Future<void> markAsSent({
     required String queueId,
     int? httpStatus,
     String? responseJson,
   }) async {
-    final item = await _isar.syncQueueItems.filter().queueIdEqualTo(queueId).findFirst();
-    if (item == null) return;
     await _isar.writeTxn(() async {
+      final item = await _isar.syncQueueItems.filter().queueIdEqualTo(queueId).findFirst();
+      if (item == null || item.status != SyncStatus.sending) return;
       item.status = SyncStatus.sent;
       item.httpStatus = httpStatus;
       item.responseJson = responseJson;
@@ -197,10 +224,9 @@ class SyncQueueRepo {
   }
 
   Future<void> markAsFailed({required String queueId, required String error}) async {
-    final item = await _isar.syncQueueItems.filter().queueIdEqualTo(queueId).findFirst();
-    if (item == null) return;
-
     await _isar.writeTxn(() async {
+      final item = await _isar.syncQueueItems.filter().queueIdEqualTo(queueId).findFirst();
+      if (item == null || item.status != SyncStatus.sending) return;
       item.status = SyncStatus.failed;
       item.lastError = error;
       item.lastAttemptAt = DateTime.now();

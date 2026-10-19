@@ -14,7 +14,7 @@ import '../core/sync/sync_service.dart';
 import '../utils/growth/growth_models.dart';
 import '../utils/growth/whz_calculator.dart';
 import '../utils/clinical/clinical_status.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 import '../widgets/clinical_status_card.dart';
 
 /// Follow-up visit screen
@@ -458,7 +458,7 @@ class _ClinicalFollowupVisitScreenState extends State<ClinicalFollowupVisitScree
     return WillPopScope(
       onWillPop: () async => !_saving,
       child: Scaffold(
-        appBar: AcfAppBar(title: isEdit ? 'Edit follow-up visit' : 'Follow-up visit'),
+        appBar: AnchorAppBar(title: isEdit ? 'Edit follow-up visit' : 'Follow-up visit'),
         body: Stack(
           children: [
             SingleChildScrollView(

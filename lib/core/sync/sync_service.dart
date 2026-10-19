@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -60,6 +61,19 @@ class SyncService {
         _boxRepo = boxRepo ?? BoxCacheRepo(),
         _sessionStore = sessionStore ?? SessionStore(),
         _pullRefreshService = pullRefreshService ?? PullRefreshService();
+
+  // Screens, AutoSyncService and the queue watcher each create their own
+  // SyncService, so the lock is static: one push run at a time in this isolate.
+  // Runs in other isolates (WorkManager) are kept apart by
+  // SyncQueueRepo.tryClaimForSending.
+  static Future<void> _pushLock = Future<void>.value();
+
+  Future<T> _withPushLock<T>(Future<T> Function() body) {
+    final previous = _pushLock;
+    final done = Completer<void>();
+    _pushLock = done.future;
+    return previous.then((_) => body()).whenComplete(done.complete);
+  }
 
   Future<bool> isOnline() async {
     final results = await _connectivity.checkConnectivity();
@@ -174,6 +188,32 @@ class SyncService {
       );
     }
 
+    final counts = await _withPushLock(
+      () => _pushQueuedItems(limit: limit, ignoreBackoff: ignoreBackoff),
+    );
+
+    if (pullAfterPush) {
+      try {
+        // Two-way sync: after pushing local queue items, pull latest server-confirmed
+        // stock and recent facility clinical records so other devices' updates appear locally.
+        await _pullRefreshService.refreshFromServer();
+      } catch (_) {
+        // Pull refresh must never make a successful push look failed.
+      }
+    }
+
+    return SyncRunResult(
+      attempted: counts.attempted,
+      sent: counts.sent,
+      failed: counts.failed,
+      online: true,
+    );
+  }
+
+  Future<({int attempted, int sent, int failed})> _pushQueuedItems({
+    required int limit,
+    required bool ignoreBackoff,
+  }) async {
     // Recover items that may have been left in SENDING if the app was closed
     // or crashed during a previous sync attempt.
     await _queueRepo.recoverStaleSendingItems(maxAge: const Duration(minutes: 5));
@@ -203,8 +243,10 @@ class SyncService {
         continue;
       }
 
+      // Another run (or isolate) may have taken this item since it was listed.
+      if (!await _queueRepo.tryClaimForSending(item.queueId)) continue;
+
       attempted += 1;
-      await _queueRepo.markAsSending(item.queueId);
 
       try {
         final path = await _resolveEndpoint(item);
@@ -279,22 +321,7 @@ class SyncService {
       }
     }
 
-    if (pullAfterPush) {
-      try {
-        // Two-way sync: after pushing local queue items, pull latest server-confirmed
-        // stock and recent facility clinical records so other devices' updates appear locally.
-        await _pullRefreshService.refreshFromServer();
-      } catch (_) {
-        // Pull refresh must never make a successful push look failed.
-      }
-    }
-
-    return SyncRunResult(
-      attempted: attempted,
-      sent: sent,
-      failed: failed,
-      online: true,
-    );
+    return (attempted: attempted, sent: sent, failed: failed);
   }
 
   Future<PullRefreshResult> pullLatestFromServer({
@@ -349,10 +376,75 @@ class SyncService {
     }
 
     if (item.entityType == 'clinical_followup') {
-      return m['existingVisit'] is Map || m['visit'] is Map;
+      final existing = m['existingVisit'] ?? m['visit'];
+      if (existing is! Map) return false;
+      return _isOwnVisit(item, existing.cast<String, dynamic>());
+    }
+
+    if (item.entityType == 'clinical_discharge') {
+      final existing = m['assessment'];
+      if (existing is! Map) return false;
+      return _isOwnAssessment(item, existing.cast<String, dynamic>());
     }
 
     return false;
+  }
+
+  /// Whether the discharge the server already holds is the one this queue item
+  /// created (a replay whose response was lost) rather than one recorded on
+  /// another device.
+  bool _isOwnAssessment(SyncQueueItem item, Map<String, dynamic> existing) {
+    final requestId = (existing['clientRequestId'] ?? '').toString().trim();
+    if (requestId.isNotEmpty) {
+      return requestId == item.queueId || requestId == (item.idempotencyKey ?? '').trim();
+    }
+
+    // Saved before the server recorded request ids: accept it if it is for the
+    // same assessment date this item sent.
+    try {
+      final payload = item.payloadJson == null ? null : jsonDecode(item.payloadJson!);
+      if (payload is! Map) return false;
+      final sent = (payload['assessmentDate'] ?? '').toString().trim();
+      final saved = (existing['assessmentDate'] ?? '').toString().trim();
+      return sent.length >= 10 && saved.length >= 10 && sent.substring(0, 10) == saved.substring(0, 10);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Whether a same-day visit the server already has is the one this queue
+  /// item created (a replay whose response was lost) rather than a visit
+  /// recorded by another phone or clinician. Treating someone else's visit as
+  /// ours would mark this item synced and silently drop its measurements and
+  /// sachets.
+  bool _isOwnVisit(SyncQueueItem item, Map<String, dynamic> existing) {
+    final requestId = (existing['clientRequestId'] ?? '').toString().trim();
+    if (requestId.isNotEmpty) {
+      return requestId == item.queueId || requestId == (item.idempotencyKey ?? '').trim();
+    }
+
+    // Visit stored before the server recorded request ids: accept it only if it
+    // holds exactly what this item would have sent.
+    Map<String, dynamic>? payload;
+    try {
+      final decoded = item.payloadJson == null ? null : jsonDecode(item.payloadJson!);
+      if (decoded is Map) payload = decoded.cast<String, dynamic>();
+    } catch (_) {
+      payload = null;
+    }
+    if (payload == null) return false;
+
+    num? asNum(dynamic v) => v is num ? v : num.tryParse((v ?? '').toString());
+    bool same(dynamic a, dynamic b) {
+      final x = asNum(a);
+      final y = asNum(b);
+      if (x == null || y == null) return x == null && y == null;
+      return (x - y).abs() < 0.001;
+    }
+
+    return same(existing['sachetsDispensed'], payload['sachetsDispensed'] ?? payload['quantitySachets']) &&
+        same(existing['weightKg'], payload['weightKg']) &&
+        same(existing['muacMm'], payload['muacMm']);
   }
 
   String _friendlySyncError(DioException error) {
@@ -363,8 +455,25 @@ class SyncService {
       return 'LOGIN_REQUIRED: Your session expired. Log in again, then tap Sync & Refresh. Your unsynced data is still saved on this device.';
     }
 
+    final errorData = error.response?.data;
+    if (statusCode == 403 && errorData is Map && errorData['code'] == 'PASSWORD_CHANGE_REQUIRED') {
+      return 'LOGIN_REQUIRED: Your password was reset by an administrator. Log in again and set a new password, then tap Sync & Refresh. Your unsynced data is still saved on this device.';
+    }
+
     if (statusCode == 403) {
       return 'NEEDS_REVIEW: Your account/facility does not have permission to sync this record. Contact the system administrator. $dataText';
+    }
+
+    final data = error.response?.data;
+    final code = data is Map ? (data['code'] ?? '').toString() : '';
+    if (statusCode == 409 && code == 'VISIT_EXISTS_SAME_DAY') {
+      return 'NEEDS_REVIEW: Another visit for this child is already recorded on that date (by another phone or clinician). Open the child and update that visit instead. This visit is still saved on this device. $dataText';
+    }
+    if (statusCode == 409 && code == 'ASSESSMENT_EXISTS') {
+      return 'NEEDS_REVIEW: This child already has this assessment recorded (possibly from another phone). Open the child to review it. This record is still saved on this device. $dataText';
+    }
+    if (statusCode == 409 && code == 'CHILD_CONFLICT') {
+      return 'NEEDS_REVIEW: Another child at this facility already uses this CWC number. Check the CWC number and correct this child before syncing again. The enrollment is still saved on this device. $dataText';
     }
 
     if (statusCode == 400 || statusCode == 404 || statusCode == 409 || statusCode == 422) {
@@ -454,7 +563,8 @@ class SyncService {
             final boxUids = boxUidsRaw.map((e) => e.toString()).toList();
             await _boxRepo.upsertMinimalMany(
               boxUids: boxUids,
-              status: 'IN_FACILITY',
+              // IN_WAREHOUSE when a field base received a transfer.
+              status: (payload['localStatus'] ?? 'IN_FACILITY').toString(),
               currentFacilityId:
                   (toFacilityId != null && toFacilityId.trim().isNotEmpty)
                   ? toFacilityId.trim()

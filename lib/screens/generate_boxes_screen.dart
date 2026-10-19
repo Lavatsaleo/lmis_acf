@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
+import 'package:uuid/uuid.dart';
 
 import '../core/config/app_config.dart';
 import '../data/local/auth/session_store.dart';
@@ -9,7 +10,8 @@ import '../data/local/auth/token_store.dart';
 import '../data/local/settings/app_settings_repo.dart';
 import '../data/remote/api_client.dart';
 import '../utils/remote_pdf.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
+import '../widgets/anchor_ui.dart';
 
 /// Warehouse-only (online): Generate boxes (QR codes) and print A3 labels.
 ///
@@ -40,6 +42,14 @@ class _GenerateBoxesScreenState extends State<GenerateBoxesScreen> {
   bool _loading = true;
   bool _saving = false;
   Map<String, dynamic>? _me;
+
+  // Idempotency key for box generation. Kept across retries of the same input
+  // (e.g. after a timeout, when the server may already have generated the
+  // boxes) so the server returns the existing boxes instead of a second set.
+  // A new key is used when any input changes or after a successful run.
+  final _uuid = const Uuid();
+  String? _generateKey;
+  String? _generateKeyInput;
 
   @override
   void initState() {
@@ -121,6 +131,13 @@ class _GenerateBoxesScreenState extends State<GenerateBoxesScreen> {
     if (exp == null) return _toast('Expiry date is required');
     if (qty <= 0) return _toast('Quantity must be > 0');
 
+    final input = [warehouseFacilityId, orderNumber, donorName, productCode, productName, batchNo, qty, _fmtYmd(exp)].join('|');
+    if (_generateKey == null || _generateKeyInput != input) {
+      _generateKey = _uuid.v4();
+      _generateKeyInput = input;
+    }
+    final generateKey = _generateKey!;
+
     setState(() => _saving = true);
     try {
       final baseUrl = await _settingsRepo.getBaseUrl();
@@ -153,6 +170,10 @@ class _GenerateBoxesScreenState extends State<GenerateBoxesScreen> {
       await api.request(
         method: 'POST',
         path: '${AppConfig.ordersPath}/$orderId/boxes/generate',
+        headers: {'X-Idempotency-Key': generateKey},
+        // Large orders can take a while; the default 20s made the phone give up
+        // while the server was still generating.
+        receiveTimeout: const Duration(minutes: 3),
         data: {
           'productCode': productCode,
           'productName': productName,
@@ -174,12 +195,16 @@ class _GenerateBoxesScreenState extends State<GenerateBoxesScreen> {
 
       await Printing.layoutPdf(onLayout: (_) async => pdf);
 
+      // Done (generated and printed): the next run is a new request.
+      _generateKey = null;
+      _generateKeyInput = null;
+
       if (!mounted) return;
       _toast('Boxes generated and labels sent to printer');
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
-      _toast('Generate/print failed: $e');
+      _toast(friendlyError(e, action: 'Making labels'));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -192,7 +217,7 @@ class _GenerateBoxesScreenState extends State<GenerateBoxesScreen> {
     final facilityName = (me?['facilityName'] ?? '').toString();
 
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Generate boxes (QR) & print'),
+      appBar: const AnchorAppBar(title: 'Make QR labels'),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -297,7 +322,7 @@ class _GenerateBoxesScreenState extends State<GenerateBoxesScreen> {
                           icon: _saving
                               ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                               : const Icon(Icons.print_outlined),
-                          label: const Text('Generate boxes & print QR labels (A3)'),
+                          label: const Text('Create boxes and print labels'),
                         ),
                         const SizedBox(height: 10),
                         Text(

@@ -8,9 +8,10 @@ import 'clinical_register_child_screen.dart';
 import 'clinical_child_detail_screen.dart';
 import 'clinical_find_child_screen.dart';
 import 'clinical_appointments_screen.dart';
+import '../core/access/user_access.dart';
 import 'queue_inspector_screen.dart';
-import '../widgets/acf_brand.dart';
-import '../widgets/acf_tiles.dart';
+import '../widgets/anchor_brand.dart';
+import '../widgets/anchor_tiles.dart';
 import '../core/sync/sync_service.dart';
 import '../core/session/active_facility_context.dart';
 import '../data/remote/clinical_remote_sync_service.dart';
@@ -110,7 +111,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
     }
 
     return Scaffold(
-      appBar: AcfAppBar(
+      appBar: AnchorAppBar(
         title: 'Clinical',
         actions: [
           IconButton(
@@ -120,15 +121,17 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
               final result = await _syncService.forceSyncNow();
               await _refreshFacilityActivity();
               if (!context.mounted) return;
-              final msg = result.online
-                  ? 'Sync done: sent ${result.sent}, failed ${result.failed}.'
-                  : 'Offline: nothing to sync.';
+              final msg = !result.online
+                  ? 'You are offline. Records stay on this phone until you are online.'
+                  : result.failed > 0
+                      ? 'Sent ${result.sent}. ${result.failed} could not sync; open Sync details.'
+                      : 'Up to date.';
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
             },
           ),
           IconButton(
-            tooltip: 'Sync queue',
-            icon: const Icon(Icons.list_alt),
+            tooltip: 'Sync details',
+            icon: const Icon(Icons.cloud_queue_outlined),
             onPressed: () {
               Navigator.push(context, MaterialPageRoute(builder: (_) => const QueueInspectorScreen()));
             },
@@ -150,9 +153,9 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
             Row(
               children: [
                 Expanded(
-                  child: AcfActionTile(
+                  child: AnchorActionTile(
                     title: 'Enroll child',
-                    subtitle: 'Enrollment, anthropometry & dispensing',
+                    subtitle: 'Register, measure and dispense',
                     icon: Icons.person_add_alt_1,
                     enabled: _canUseClinical,
                     onTap: () {
@@ -169,9 +172,9 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: AcfActionTile(
+                  child: AnchorActionTile(
                     title: 'Find child',
-                    subtitle: 'Search local cache',
+                    subtitle: 'Search children saved on this phone',
                     icon: Icons.search,
                     enabled: _canUseClinical,
                     onTap: () {
@@ -187,7 +190,7 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
             ),
 
             const SizedBox(height: 12),
-            AcfActionTile(
+            AnchorActionTile(
               title: 'Appointments diary',
               subtitle: 'See expected appointments for today & next 7 days',
               icon: Icons.event_note,
@@ -373,16 +376,16 @@ class _TopCard extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const AcfLogo(size: 42),
+          const AnchorLogo(size: 42),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Role: $role', style: const TextStyle(fontWeight: FontWeight.w900), maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(facilityName.isEmpty ? 'No facility linked' : facilityName, style: const TextStyle(fontWeight: FontWeight.w900), maxLines: 1, overflow: TextOverflow.ellipsis),
                 const SizedBox(height: 4),
                 Text(
-                  facilityName.isEmpty ? 'Facility: (not set)' : 'Facility: $facilityName',
+                  UserAccess.roleLabelFor(role),
                   style: TextStyle(color: cs.onSurfaceVariant),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -401,7 +404,7 @@ class _TopCard extends StatelessWidget {
   }
 }
 
-// _ActionCard replaced by shared AcfActionTile.
+// _ActionCard replaced by shared AnchorActionTile.
 
 class _StatPill extends StatelessWidget {
   final String label;

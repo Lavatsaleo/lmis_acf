@@ -11,7 +11,7 @@ import '../data/local/clinical/clinical_child_repo.dart';
 import '../data/local/isar/clinical_child.dart';
 import '../data/local/settings/app_settings_repo.dart';
 import '../data/remote/api_client.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 import 'clinical_child_detail_screen.dart';
 import 'clinical_enrollment_visit_screen.dart';
 
@@ -478,7 +478,7 @@ class _ClinicalRegisterChildScreenState extends State<ClinicalRegisterChildScree
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Enroll child'),
+      appBar: const AnchorAppBar(title: 'Enroll child'),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(

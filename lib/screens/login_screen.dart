@@ -7,12 +7,16 @@ import '../data/local/auth/token_store.dart';
 import '../data/local/sync/sync_queue_repo.dart';
 import '../data/remote/api_client.dart';
 import '../data/remote/auth_api.dart';
-import '../widgets/acf_brand.dart';
+import '../core/colors.dart';
+import '../widgets/anchor_brand.dart';
+import '../widgets/anchor_ui.dart';
 import '../widgets/app_version_badge.dart';
+import 'change_password_screen.dart';
 
 /// Sign in screen.
 ///
-/// Backend URL is fixed in code and is no longer user-editable.
+/// Brand header, one sign-in card, and a single footer credit. The backend URL
+/// is fixed in code (a test build shows which server it uses).
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -141,6 +145,16 @@ class _LoginScreenState extends State<LoginScreen> {
       await _syncQueueRepo.resetRetryWindowsForAllPendingAndFailed();
 
       if (!mounted) return;
+      // An admin set this password: the user must choose their own first
+      // (the server refuses everything else until they do).
+      if (loginRes.user['mustChangePassword'] == true || userJson['mustChangePassword'] == true) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ChangePasswordScreen(required: true, currentPassword: password),
+          ),
+        );
+        return;
+      }
       Navigator.pushReplacementNamed(context, '/home');
     } on DioException catch (e) {
       if (!mounted) return;
@@ -152,14 +166,25 @@ class _LoginScreenState extends State<LoginScreen> {
         serverMsg = data['message'].toString();
       }
 
-      final pretty = serverMsg.isNotEmpty
-          ? 'Login failed (${status ?? 'no status'}): $serverMsg'
-          : 'Login failed (${status ?? 'no status'}): ${e.message ?? e.toString()}';
+      final String pretty;
+      if (status == null) {
+        pretty = 'Cannot reach the server. Check your internet connection and try again.';
+      } else if (status == 401 || status == 400) {
+        pretty = 'Wrong email or password.';
+      } else if (status == 423) {
+        pretty = serverMsg.isNotEmpty ? serverMsg : 'This account is locked for a few minutes after too many wrong passwords.';
+      } else if (status == 429) {
+        pretty = 'Too many sign-in attempts. Wait a few minutes and try again.';
+      } else if (status == 403) {
+        pretty = serverMsg.isNotEmpty ? serverMsg : 'This account cannot sign in. Contact your administrator.';
+      } else {
+        pretty = serverMsg.isNotEmpty ? serverMsg : 'Sign-in failed (error $status). Try again.';
+      }
 
       _show(pretty);
     } catch (e) {
       if (!mounted) return;
-      _show('Login failed: $e');
+      _show('Sign-in failed: $e');
     } finally {
       if (mounted) setState(() => _loggingIn = false);
     }
@@ -197,145 +222,151 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Sign in', showLogo: true),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Brand header
+            Container(
+              decoration: const BoxDecoration(
+                gradient: anchorGradient,
+                borderRadius: BorderRadius.vertical(bottom: Radius.circular(32)),
+              ),
+              padding: EdgeInsets.fromLTRB(24, MediaQuery.of(context).padding.top + 36, 24, 64),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        children: [
-                          const AcfLogo(size: 72),
-                          const SizedBox(height: 12),
-                          const Text(
-                            'Action Against Hunger',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'LMIS and Clinical Mobile App',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: cs.onSurfaceVariant,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                          const SizedBox(height: 6),
-                          const AppVersionBadge(),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Sign in to continue.',
-                            style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.12), blurRadius: 18, offset: const Offset(0, 6))],
                     ),
+                    child: const AnchorFullLogo(width: 112),
                   ),
-                  const SizedBox(height: 14),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Text(
-                            'Credentials',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w800,
-                              color: cs.onSurface,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          TextFormField(
-                            controller: _emailCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Email',
-                              prefixIcon: Icon(Icons.email_outlined),
-                            ),
-                            keyboardType: TextInputType.emailAddress,
-                            enabled: !_loggingIn,
-                          ),
-                          const SizedBox(height: 12),
-                          TextFormField(
-                            controller: _passwordCtrl,
-                            decoration: InputDecoration(
-                              labelText: 'Password',
-                              prefixIcon: const Icon(Icons.lock_outline),
-                              suffixIcon: IconButton(
-                                tooltip: _hidePassword ? 'Show password' : 'Hide password',
-                                onPressed: _loggingIn
-                                    ? null
-                                    : () => setState(() => _hidePassword = !_hidePassword),
-                                icon: Icon(
-                                  _hidePassword ? Icons.visibility : Icons.visibility_off,
-                                ),
-                              ),
-                            ),
-                            obscureText: _hidePassword,
-                            enabled: !_loggingIn,
-                          ),
-                          const SizedBox(height: 12),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: cs.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(Icons.lock_outline, size: 18, color: cs.primary),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    'Powered By AAHDMS',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: cs.onSurfaceVariant,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: _loggingIn ? null : _login,
-                    icon: _loggingIn
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.login),
-                    label: Text(_loggingIn ? 'Signing in...' : 'Sign in'),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton.icon(
-                    onPressed: _loggingIn ? null : _clearSession,
-                    icon: const Icon(Icons.cleaning_services_outlined),
-                    label: const Text('Clear local session'),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'Track every box, from warehouse to child',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700),
                   ),
                 ],
               ),
             ),
-          ),
+
+            // Sign-in card, overlapping the header
+            Transform.translate(
+              offset: const Offset(0, -36),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 460),
+                    child: Card(
+                      elevation: 0,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
+                        child: AutofillGroup(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Text('Sign in', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: cs.onSurface)),
+                              const SizedBox(height: 4),
+                              Text('Use the email and password from your administrator.',
+                                  style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
+                              if (AppConfig.isTestServer) ...[
+                                const SizedBox(height: 12),
+                                AnchorNotice('Test server: ${AppConfig.defaultBaseUrl}', icon: Icons.science_outlined, warning: true),
+                              ],
+                              const SizedBox(height: 18),
+                              TextFormField(
+                                controller: _emailCtrl,
+                                decoration: const InputDecoration(
+                                  labelText: 'Email',
+                                  prefixIcon: Icon(Icons.email_outlined),
+                                ),
+                                keyboardType: TextInputType.emailAddress,
+                                textInputAction: TextInputAction.next,
+                                autofillHints: const [AutofillHints.username, AutofillHints.email],
+                                autocorrect: false,
+                                enabled: !_loggingIn,
+                              ),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _passwordCtrl,
+                                decoration: InputDecoration(
+                                  labelText: 'Password',
+                                  prefixIcon: const Icon(Icons.lock_outline),
+                                  suffixIcon: IconButton(
+                                    tooltip: _hidePassword ? 'Show password' : 'Hide password',
+                                    onPressed: _loggingIn ? null : () => setState(() => _hidePassword = !_hidePassword),
+                                    icon: Icon(_hidePassword ? Icons.visibility : Icons.visibility_off),
+                                  ),
+                                ),
+                                obscureText: _hidePassword,
+                                textInputAction: TextInputAction.done,
+                                autofillHints: const [AutofillHints.password],
+                                onFieldSubmitted: (_) => _login(),
+                                enabled: !_loggingIn,
+                              ),
+                              const SizedBox(height: 20),
+                              SizedBox(
+                                height: 52,
+                                child: FilledButton(
+                                  onPressed: _loggingIn ? null : _login,
+                                  child: _loggingIn
+                                      ? const Row(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                                            SizedBox(width: 12),
+                                            Text('Signing in…'),
+                                          ],
+                                        )
+                                      : const Text('Sign in', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              Text(
+                                'Forgot your password? Ask your administrator to reset it.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // Footer
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+              child: Column(
+                children: [
+                  Text(
+                    'by Action Against Hunger',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: isDark ? cs.onSurfaceVariant : anchorInk),
+                  ),
+                  const SizedBox(height: 4),
+                  const AppVersionBadge(),
+                  const SizedBox(height: 4),
+                  TextButton(
+                    onPressed: _loggingIn ? null : _clearSession,
+                    style: TextButton.styleFrom(foregroundColor: cs.onSurfaceVariant, textStyle: const TextStyle(fontSize: 12)),
+                    child: const Text('Trouble signing in? Reset this phone\'s session'),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

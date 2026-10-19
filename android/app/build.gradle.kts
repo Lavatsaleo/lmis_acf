@@ -42,6 +42,15 @@ android {
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // Test builds (-PanchorTest=true) install as a separate app, "Anchor
+        // TEST", so they never replace the production app or share its data.
+        val anchorTest = (project.findProperty("anchorTest") as String?) == "true"
+        if (anchorTest) {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+        }
+        manifestPlaceholders["appLabel"] = if (anchorTest) "Anchor TEST" else "Anchor"
     }
 
     buildTypes {

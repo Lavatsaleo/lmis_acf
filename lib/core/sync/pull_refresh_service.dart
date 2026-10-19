@@ -66,6 +66,10 @@ class PullRefreshService {
         _boxRepo = boxRepo ?? BoxCacheRepo(),
         _clinicalRemote = clinicalRemote ?? ClinicalRemoteSyncService();
 
+  // Upper bound on delta pages fetched in one pull (pages are up to `take`
+  // children each); anything left continues on the next pull.
+  static const int _maxDeltaPagesPerPull = 20;
+
   Future<bool> isOnline() async {
     final results = await _connectivity.checkConnectivity();
     return results.isNotEmpty && !results.contains(ConnectivityResult.none);
@@ -186,32 +190,52 @@ class PullRefreshService {
     required int take,
     required bool forceFullClinicalPull,
   }) async {
-    final lastPull = forceFullClinicalPull ? null : await _settingsRepo.getClinicalLastPullAt(facilityId);
-    final data = await _clinicalRemote.fetchFacilitySyncDelta(since: lastPull, take: take);
-
-    final childrenRaw = data['children'];
-    final children = <Map<String, dynamic>>[];
-    if (childrenRaw is List) {
-      for (final row in childrenRaw.whereType<Map>()) {
-        children.add(row.cast<String, dynamic>());
-      }
-    }
+    var since = forceFullClinicalPull ? null : await _settingsRepo.getClinicalLastPullAt(facilityId);
+    var sinceId = since == null ? null : await _settingsRepo.getClinicalLastPullCursorId(facilityId);
 
     var imported = 0;
     var failed = 0;
-    for (final summary in children) {
-      try {
-        await _clinicalRemote.importChildSummaryMap(summary);
-        imported += 1;
-      } catch (_) {
-        failed += 1;
-      }
-    }
+    DateTime? serverTime;
 
-    final serverTimeRaw = data['serverTime'];
-    final serverTime = serverTimeRaw == null ? DateTime.now().toUtc() : DateTime.tryParse(serverTimeRaw.toString())?.toUtc();
-    if (serverTime != null && failed == 0) {
-      await _settingsRepo.setClinicalLastPullAt(facilityId, serverTime);
+    // The server returns changes oldest-first in pages and says where the next
+    // page starts. Keep going until it reports no more, so a large facility or a
+    // phone that was offline for days does not silently miss children.
+    for (var pageNo = 0; pageNo < _maxDeltaPagesPerPull; pageNo++) {
+      final data = await _clinicalRemote.fetchFacilitySyncDelta(since: since, sinceId: sinceId, take: take);
+
+      final childrenRaw = data['children'];
+      final children = <Map<String, dynamic>>[];
+      if (childrenRaw is List) {
+        for (final row in childrenRaw.whereType<Map>()) {
+          children.add(row.cast<String, dynamic>());
+        }
+      }
+
+      var pageFailed = 0;
+      for (final summary in children) {
+        try {
+          await _clinicalRemote.importChildSummaryMap(summary);
+          imported += 1;
+        } catch (_) {
+          pageFailed += 1;
+        }
+      }
+      failed += pageFailed;
+
+      // nextSince is the cursor; older backends only send serverTime.
+      final nextRaw = data['nextSince'] ?? data['serverTime'];
+      final next = nextRaw == null ? DateTime.now().toUtc() : DateTime.tryParse(nextRaw.toString())?.toUtc();
+
+      // Do not advance past a page that failed to import: retry it next pull.
+      if (next == null || pageFailed > 0) break;
+
+      final nextId = data['nextSinceId']?.toString();
+      await _settingsRepo.setClinicalLastPullAt(facilityId, next, cursorId: nextId);
+      serverTime = next;
+      since = next;
+      sinceId = nextId;
+
+      if (data['hasMore'] != true) break;
     }
 
     return _ClinicalPullCounts(

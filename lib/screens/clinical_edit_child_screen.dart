@@ -11,7 +11,7 @@ import '../data/local/isar/clinical_child.dart';
 import '../data/local/isar/sync_queue_item.dart';
 import '../data/local/sync/sync_queue_repo.dart';
 import '../data/remote/clinical_remote_sync_service.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 
 class ClinicalEditChildScreen extends StatefulWidget {
   final String localChildId;
@@ -194,8 +194,12 @@ class _ClinicalEditChildScreenState extends State<ClinicalEditChildScreen> {
       if (_hasRemoteChild) {
         final results = await _connectivity.checkConnectivity();
         final online = !results.contains(ConnectivityResult.none);
+        // If an earlier offline edit is still queued, go through the queue so
+        // this edit replaces it; saving directly would let the older queued
+        // edit overwrite this one on the server when it syncs later.
+        final olderEditQueued = await _queueRepo.hasUnsentForEntity(child.localChildId);
 
-        if (online) {
+        if (online && !olderEditQueued) {
           final localChildId = await _remoteSync.updateRemoteChild(
             remoteChildId: child.remoteChildId!,
             payload: payload,
@@ -322,7 +326,7 @@ class _ClinicalEditChildScreenState extends State<ClinicalEditChildScreen> {
     }
 
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Edit enrollment details'),
+      appBar: const AnchorAppBar(title: 'Edit enrollment details'),
       body: Stack(
         children: [
           Form(

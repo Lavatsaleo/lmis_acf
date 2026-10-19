@@ -13,6 +13,10 @@ class PlatformContext {
   final String implementationName;
   final Set<String> enabledModules;
 
+  /// Mobile stock-control tools for warehouse officers (receive PO, stock
+  /// count, report loss). Off unless the country has switched them on.
+  final bool warehouseTools;
+
   const PlatformContext({
     required this.isConfigured,
     required this.countryId,
@@ -22,6 +26,7 @@ class PlatformContext {
     required this.implementationCode,
     required this.implementationName,
     required this.enabledModules,
+    this.warehouseTools = false,
   });
 
   factory PlatformContext.fromUserJson(Map<String, dynamic>? user) {
@@ -59,6 +64,7 @@ class PlatformContext {
       implementationCode: value(implementation, 'code'),
       implementationName: value(implementation, 'name'),
       enabledModules: modules,
+      warehouseTools: implementation['warehouseTools'] == true,
     );
   }
 

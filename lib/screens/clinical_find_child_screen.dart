@@ -8,7 +8,7 @@ import '../data/remote/api_client.dart';
 import '../data/remote/clinical_remote_sync_service.dart';
 import '../data/local/isar/clinical_child.dart';
 import 'clinical_child_detail_screen.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 
 class ClinicalFindChildScreen extends StatefulWidget {
   const ClinicalFindChildScreen({super.key});
@@ -126,7 +126,7 @@ Future<void> _importRemote(Map<String, dynamic> remote) async {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Find child'),
+      appBar: const AnchorAppBar(title: 'Find child'),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(

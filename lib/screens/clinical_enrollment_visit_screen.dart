@@ -14,7 +14,7 @@ import '../data/local/sync/sync_queue_repo.dart';
 import '../utils/growth/growth_models.dart';
 import '../utils/growth/whz_calculator.dart';
 import '../utils/clinical/clinical_status.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 import '../widgets/clinical_status_card.dart';
 
 /// Simple enrollment visit screen.
@@ -549,7 +549,7 @@ class _ClinicalEnrollmentVisitScreenState extends State<ClinicalEnrollmentVisitS
     return WillPopScope(
       onWillPop: () async => !_saving,
       child: Scaffold(
-        appBar: AcfAppBar(title: isEdit ? 'Edit enrollment visit' : 'Enrollment visit'),
+        appBar: AnchorAppBar(title: isEdit ? 'Edit enrollment visit' : 'Enrollment visit'),
         body: Stack(
           children: [
             SingleChildScrollView(

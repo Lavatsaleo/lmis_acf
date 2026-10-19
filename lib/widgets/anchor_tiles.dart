@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 /// Consistent, overflow-safe tiles used across the app.
 
-class AcfActionTile extends StatelessWidget {
+class AnchorActionTile extends StatelessWidget {
   final String title;
   final String subtitle;
   final IconData icon;
@@ -13,7 +13,7 @@ class AcfActionTile extends StatelessWidget {
   /// If you want all tiles to align nicely in a Row, keep the same height.
   final double minHeight;
 
-  const AcfActionTile({
+  const AnchorActionTile({
     super.key,
     required this.title,
     required this.subtitle,
@@ -34,8 +34,11 @@ class AcfActionTile extends StatelessWidget {
     return InkWell(
       onTap: enabled ? onTap : null,
       borderRadius: BorderRadius.circular(18),
-      child: Ink(
-        height: minHeight,
+      // A minimum, not a fixed height: with the phone's larger text setting the
+      // two-line subtitle needs more room, and a fixed height would overflow.
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: minHeight),
+        child: Ink(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: bg,
@@ -77,6 +80,7 @@ class AcfActionTile extends StatelessWidget {
             ),
             Icon(Icons.chevron_right, color: enabled ? cs.onSurfaceVariant : cs.onSurfaceVariant.withOpacity(0.6)),
           ],
+        ),
         ),
       ),
     );

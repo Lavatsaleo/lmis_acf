@@ -12,15 +12,17 @@ import '../data/local/auth/token_store.dart';
 import '../data/local/settings/app_settings_repo.dart';
 import '../data/remote/api_client.dart';
 import '../utils/remote_pdf.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
+import '../widgets/anchor_ui.dart';
 
 class _FacilityLite {
   final String id;
   final String name;
   final String? code;
   final String? type; // WAREHOUSE/FACILITY
+  final String? parentStockLocationId;
 
-  const _FacilityLite({required this.id, required this.name, this.code, this.type});
+  const _FacilityLite({required this.id, required this.name, this.code, this.type, this.parentStockLocationId});
 
   factory _FacilityLite.fromJson(Map<String, dynamic> j) {
     return _FacilityLite(
@@ -28,7 +30,19 @@ class _FacilityLite {
       name: (j['name'] ?? j['facilityName'] ?? '').toString(),
       code: j['code']?.toString(),
       type: j['type']?.toString(),
+      parentStockLocationId: j['parentStockLocationId']?.toString(),
     );
+  }
+
+  /// Valid dispatch destination from [fromId]: a facility, or a warehouse
+  /// directly below it (warehouse-to-warehouse transfer, e.g. main warehouse
+  /// to field base). Kenya warehouses have no warehouses below them, so only
+  /// facilities appear there, as before.
+  bool isDestinationFrom(String? fromId) {
+    if (id == fromId) return false;
+    final t = type ?? 'FACILITY';
+    if (t == 'FACILITY') return true;
+    return t == 'WAREHOUSE' && fromId != null && parentStockLocationId == fromId;
   }
 }
 
@@ -107,11 +121,10 @@ class _DispatchScreenState extends State<DispatchScreen> {
 
       final fromId = (me?['warehouseId'] ?? me?['facilityId'])?.toString();
 
-      // Default TO: first FACILITY different from FROM.
+      // Default TO: first valid destination different from FROM.
       String? toId;
       for (final f in facilities) {
-        if (f.id == fromId) continue;
-        if ((f.type ?? 'FACILITY') == 'FACILITY') {
+        if (f.isDestinationFrom(fromId)) {
           toId = f.id;
           break;
         }
@@ -131,7 +144,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
         _me = me;
         _loading = false;
       });
-      _toast('Failed to load facilities: $e');
+      _toast('Could not load destinations: ${friendlyError(e)}');
     }
   }
 
@@ -168,7 +181,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
 
     final expected = int.tryParse(_expectedCountCtl.text.trim()) ?? 0;
     if (expected <= 0) {
-      _toast('Expected count must be > 0');
+      _toast('Enter how many boxes you are sending.');
       return;
     }
 
@@ -179,15 +192,15 @@ class _DispatchScreenState extends State<DispatchScreen> {
         context,
         MaterialPageRoute(
           builder: (_) => MultiScanPage(
-            title: 'Dispatch: Scan boxes',
+            title: 'Scan boxes to dispatch',
             expectedCount: expected,
-            helperText: 'Scan $expected box QR codes. Dispatch will be sent immediately and a waybill will print.',
+            helperText: 'Scan all $expected boxes. The dispatch is sent when you finish, then the waybill prints.',
           ),
         ),
       );
 
       if (scans == null || scans.isEmpty) {
-        _toast('No scans captured');
+        _toast('No boxes were scanned. Nothing was sent.');
         return;
       }
 
@@ -202,7 +215,7 @@ class _DispatchScreenState extends State<DispatchScreen> {
       }
 
       if (boxUids.isEmpty) {
-        _toast('No valid boxUid found in scans');
+        _toast('Those QR codes are not Anchor box labels.');
         return;
       }
 
@@ -243,11 +256,11 @@ class _DispatchScreenState extends State<DispatchScreen> {
       }
 
       if (!mounted) return;
-      _toast(manifestNo == null ? 'Dispatched and printed waybill' : 'Dispatched ($manifestNo) and printed waybill');
+      _toast(manifestNo == null ? 'Dispatched. Waybill sent to the printer.' : 'Dispatched as $manifestNo. Waybill sent to the printer.');
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
-      _toast('Dispatch failed: $e');
+      _toast(friendlyError(e, action: 'Dispatch'));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -273,116 +286,112 @@ class _DispatchScreenState extends State<DispatchScreen> {
     final role = (me?['role'] ?? '').toString();
 
     final from = _findFacility(_fromFacilityId);
-    final toFacilities = _facilities.where((f) => f.id != _fromFacilityId && (f.type ?? 'FACILITY') == 'FACILITY').toList();
-
+    final toFacilities = _facilities.where((f) => f.isDestinationFrom(_fromFacilityId)).toList();
     final canUse = role == 'WAREHOUSE_OFFICER' || role == 'SUPER_ADMIN';
+    final expected = int.tryParse(_expectedCountCtl.text.trim()) ?? 0;
+    final ready = _toFacilityId != null && expected > 0;
+
+    String label(_FacilityLite f) => '${f.name}${f.code == null ? '' : ' (${f.code})'}';
 
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Dispatch shipment'),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: !canUse
-            ? Card(
-                child: Padding(
+      appBar: const AnchorAppBar(title: 'Dispatch'),
+      body: !canUse
+          ? const Padding(
+              padding: EdgeInsets.all(16),
+              child: AnchorNotice('Only warehouse officers can dispatch boxes.', warning: true),
+            )
+          : _loading
+              ? const Center(child: CircularProgressIndicator())
+              : ListView(
                   padding: const EdgeInsets.all(16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text('Your role ($role) cannot dispatch.', style: TextStyle(color: cs.onSurfaceVariant)),
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.arrow_back),
-                        label: const Text('Back'),
-                      ),
-                    ],
-                  ),
-                ),
-              )
-            : _loading
-                ? const Center(child: CircularProgressIndicator())
-                : ListView(
-                    children: [
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              const Text('Shipment details', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
-                              const SizedBox(height: 12),
-                              InputDecorator(
-                                decoration: const InputDecoration(labelText: 'From warehouse', border: OutlineInputBorder()),
-                                child: Text(
-                                  from == null
-                                      ? (_fromFacilityId ?? 'Not set')
-                                      : '${from.name}${from.code == null ? '' : ' (${from.code})'}',
-                                  style: const TextStyle(fontWeight: FontWeight.w800),
-                                ),
+                  children: [
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            AnchorStep(number: 1, title: 'Where are the boxes going?', done: _toFacilityId != null),
+                            InputDecorator(
+                              decoration: const InputDecoration(labelText: 'From', prefixIcon: Icon(Icons.warehouse_outlined)),
+                              child: Text(from == null ? 'Your warehouse' : label(from), style: const TextStyle(fontWeight: FontWeight.w800)),
+                            ),
+                            const SizedBox(height: 12),
+                            DropdownButtonFormField<String>(
+                              value: _toFacilityId,
+                              isExpanded: true,
+                              decoration: InputDecoration(
+                                labelText: toFacilities.any((f) => f.type == 'WAREHOUSE') ? 'To (site or field base)' : 'To (facility)',
+                                prefixIcon: const Icon(Icons.place_outlined),
                               ),
-                              const SizedBox(height: 12),
-                              DropdownButtonFormField<String>(
-                                value: _toFacilityId,
-                                decoration: const InputDecoration(labelText: 'To facility (receiver)'),
-                                items: toFacilities
-                                    .map(
-                                      (f) => DropdownMenuItem(
+                              hint: const Text('Choose the receiver'),
+                              items: toFacilities
+                                  .map((f) => DropdownMenuItem(
                                         value: f.id,
-                                        child: Text('${f.name}${f.code == null ? '' : ' (${f.code})'}'),
-                                      ),
-                                    )
-                                    .toList(),
-                                onChanged: _saving ? null : (v) => setState(() => _toFacilityId = v),
-                              ),
-                              const SizedBox(height: 12),
-                              TextField(
-                                controller: _expectedCountCtl,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(labelText: 'Expected number of boxes'),
-                                enabled: !_saving,
-                              ),
-                              const SizedBox(height: 12),
-                              TextField(
-                                controller: _noteCtl,
-                                decoration: const InputDecoration(
-                                  labelText: 'Note (optional)',
-                                  hintText: 'e.g. truck, driver, route...',
-                                ),
-                                enabled: !_saving,
-                              ),
-                            ],
-                          ),
+                                        child: Text('${label(f)}${f.type == 'WAREHOUSE' ? ' · field base' : ''}', overflow: TextOverflow.ellipsis),
+                                      ))
+                                  .toList(),
+                              onChanged: _saving ? null : (v) => setState(() => _toFacilityId = v),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              const Text('Scan & dispatch', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
-                              const SizedBox(height: 10),
-                              FilledButton.icon(
-                                onPressed: _saving ? null : _startDispatch,
+                    ),
+                    const SizedBox(height: 12),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            AnchorStep(number: 2, title: 'How many boxes?', hint: 'Count the boxes you are loading.', done: expected > 0),
+                            TextField(
+                              controller: _expectedCountCtl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(labelText: 'Number of boxes', prefixIcon: Icon(Icons.inventory_2_outlined)),
+                              enabled: !_saving,
+                              onChanged: (_) => setState(() {}),
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _noteCtl,
+                              decoration: const InputDecoration(labelText: 'Note (optional)', hintText: 'Truck, driver, route…', prefixIcon: Icon(Icons.notes)),
+                              enabled: !_saving,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const AnchorStep(number: 3, title: 'Scan and send', hint: 'Scan each box QR. When all are scanned, the dispatch is sent and the waybill prints.'),
+                            SizedBox(
+                              height: 52,
+                              child: FilledButton.icon(
+                                onPressed: _saving || !ready ? null : _startDispatch,
                                 icon: _saving
-                                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                                     : const Icon(Icons.qr_code_scanner),
-                                label: const Text('Scan boxes → dispatch & print waybill'),
+                                label: Text(_saving ? 'Sending…' : expected > 0 ? 'Scan $expected boxes' : 'Scan boxes'),
                               ),
-                              const SizedBox(height: 10),
-                              Text(
-                                'Warehouse dispatch is online-only. The server validates box status and destination, updates stock immediately, and generates a waybill PDF.',
-                                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
-                              ),
+                            ),
+                            if (!ready) ...[
+                              const SizedBox(height: 8),
+                              Text('Complete steps 1 and 2 first.', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
                             ],
-                          ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
-      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const AnchorNotice('Dispatch needs internet. Stock leaves your warehouse as soon as the dispatch is sent.', icon: Icons.wifi),
+                  ],
+                ),
     );
   }
 }

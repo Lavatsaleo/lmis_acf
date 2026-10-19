@@ -10,7 +10,8 @@ import '../data/local/cache/box_cache_repo.dart';
 import '../data/local/clinical/clinical_assessment_repo.dart';
 import '../data/local/settings/app_settings_repo.dart';
 import '../data/remote/api_client.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
+import '../widgets/anchor_ui.dart';
 
 /// Facility Store (Boxes + Sachets)
 ///
@@ -132,7 +133,14 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
           final uid = (b.boxUid ?? '').toString();
           final batchNo = (b.batchNo ?? '').toString().trim().isEmpty ? null : b.batchNo;
           final exp = b.expiryDate as DateTime?;
-          return _StoreRow(boxUid: uid, batchNo: batchNo, expiryDate: exp);
+          final capacity = (b.sachetsPerBox as int?) ?? _legacyPackSize;
+          return _StoreRow(
+            boxUid: uid,
+            batchNo: batchNo,
+            expiryDate: exp,
+            capacity: capacity,
+            serverRemaining: b.sachetsRemaining as int?,
+          );
         })
         .where((r) => r.boxUid.trim().isNotEmpty)
         .toList();
@@ -145,18 +153,32 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
       return a.boxUid.compareTo(b.boxUid);
     });
 
-    final totalCapacity = rows.length * 600;
-    final safeBaseRemaining = baseSachetsRemaining.clamp(0, totalCapacity).toInt();
-    int totalConsumed = totalCapacity - safeBaseRemaining + pendingLocalDispensed;
-
-    for (final r in rows) {
-      int remaining = 600;
-      if (totalConsumed > 0) {
-        final take = totalConsumed >= 600 ? 600 : totalConsumed;
-        remaining -= take;
-        totalConsumed -= take;
+    if (rows.every((r) => r.serverRemaining != null)) {
+      // Each box's balance from the last server refresh.
+      for (final r in rows) {
+        r.remaining = r.serverRemaining!.clamp(0, r.capacity).toInt();
       }
-      r.remaining = remaining.clamp(0, 600).toInt();
+    } else {
+      // Boxes cached by an older build have no per-box balance: spread the
+      // server total over the boxes, consuming earliest-expiring first.
+      final totalCapacity = rows.fold<int>(0, (sum, r) => sum + r.capacity);
+      final safeBaseRemaining = baseSachetsRemaining.clamp(0, totalCapacity).toInt();
+      int consumed = totalCapacity - safeBaseRemaining;
+      for (final r in rows) {
+        final take = consumed < r.capacity ? consumed : r.capacity;
+        r.remaining = r.capacity - take;
+        consumed -= take;
+      }
+    }
+
+    // Then take out dispenses recorded on this phone that have not synced yet
+    // (FEFO, same order the server allocates in).
+    int pending = pendingLocalDispensed;
+    for (final r in rows) {
+      if (pending <= 0) break;
+      final take = pending < r.remaining ? pending : r.remaining;
+      r.remaining -= take;
+      pending -= take;
     }
 
     return rows;
@@ -224,7 +246,7 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
       }
       _toast('Store refreshed from server');
     } catch (e) {
-      _toast('Refresh failed: $e');
+      _toast('Could not refresh: ${friendlyError(e)}');
     } finally {
       if (mounted) setState(() => _refreshing = false);
     }
@@ -247,21 +269,21 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
     final facilityId = _facilityId;
 
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Facility store'),
+      appBar: const AnchorAppBar(title: 'Store'),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: !canUse
             ? Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Text('Your role ($role) cannot access store.', style: TextStyle(color: cs.onSurfaceVariant)),
+                  child: Text('Your account does not have a facility store.', style: TextStyle(color: cs.onSurfaceVariant)),
                 ),
               )
             : (facilityId == null || facilityId.isEmpty)
                 ? Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
-                      child: Text('No facility assigned to this user.', style: TextStyle(color: cs.onSurfaceVariant)),
+                      child: Text('Your account is not linked to a facility yet. Ask your administrator.', style: TextStyle(color: cs.onSurfaceVariant)),
                     ),
                   )
                 : StreamBuilder(
@@ -273,8 +295,12 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
                         future: _readCachedStoreSnapshot(facilityId),
                         builder: (context, storeSnap) {
                           final cachedStore = storeSnap.data;
-                          final effectiveServerTotal =
-                              cachedStore?.totalSachetsRemaining ?? _serverTotalSachetsRemaining ?? (boxes.length * 600);
+                          final effectiveServerTotal = cachedStore?.totalSachetsRemaining ??
+                              _serverTotalSachetsRemaining ??
+                              boxes.fold<int>(
+                                0,
+                                (sum, b) => sum + (b.sachetsRemaining ?? b.sachetsPerBox ?? _legacyPackSize),
+                              );
                           final effectiveServerBoxes =
                               cachedStore?.boxesInStore ?? _serverBoxesInStore ?? boxes.length;
                           final effectiveRefreshAt = cachedStore?.refreshedAt ?? _lastServerRefreshAt;
@@ -368,10 +394,10 @@ class _FacilityStoreScreenState extends State<FacilityStoreScreen> {
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.stretch,
                                     children: [
-                                      const Text('Boxes (projected FEFO view)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                                      const Text('Boxes · earliest expiry first', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
                                       const SizedBox(height: 10),
                                       if (rows.isEmpty)
-                                        Text('No boxes in store. Receive from manifest first.', style: TextStyle(color: cs.onSurfaceVariant))
+                                        Text('No boxes in the store yet. Receive a shipment to add boxes.', style: TextStyle(color: cs.onSurfaceVariant))
                                       else
                                         ...rows.map((r) {
                                           return Container(
@@ -493,11 +519,23 @@ class _MetricCard extends StatelessWidget {
   }
 }
 
+// Pack size assumed only for boxes cached by app builds that did not store it
+// (the original Kenya SQ-LNS box).
+const int _legacyPackSize = 600;
+
 class _StoreRow {
   final String boxUid;
   final String? batchNo;
   final DateTime? expiryDate;
+  final int capacity;
+  final int? serverRemaining;
   int remaining;
 
-  _StoreRow({required this.boxUid, this.batchNo, this.expiryDate, this.remaining = 600});
+  _StoreRow({
+    required this.boxUid,
+    this.batchNo,
+    this.expiryDate,
+    required this.capacity,
+    this.serverRemaining,
+  }) : remaining = capacity;
 }

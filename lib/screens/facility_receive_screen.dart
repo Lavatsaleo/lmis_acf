@@ -15,7 +15,8 @@ import '../data/local/settings/app_settings_repo.dart';
 import '../data/local/sync/sync_queue_repo.dart';
 import '../data/remote/api_client.dart';
 import '../data/remote/shipment_api.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
+import '../widgets/anchor_ui.dart';
 
 /// Facility Receive (Manifest-driven)
 ///
@@ -69,6 +70,18 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
   }
 
   String? get _facilityId => (_me?['facilityId'] as String?)?.trim();
+
+  /// A field base warehouse officer receiving a transfer from the main warehouse.
+  bool get _isFieldBaseReceiver {
+    final f = _me?['facility'];
+    return (_me?['role'] ?? '').toString() == 'WAREHOUSE_OFFICER' &&
+        f is Map &&
+        (f['stockLocationType'] ?? '').toString() == 'FIELD_BASE_WAREHOUSE';
+  }
+
+  /// Status received boxes take locally: warehouse stock at a field base,
+  /// facility stock everywhere else (mirrors the server).
+  String get _receivedBoxStatus => _isFieldBaseReceiver ? 'IN_WAREHOUSE' : 'IN_FACILITY';
 
   String get _facilityLabel {
     final f = _me?['facility'];
@@ -124,7 +137,7 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
       final api = ApiClient.create(baseUrl: baseUrl);
       final shipmentApi = ShipmentApi(api);
 
-      final items = await shipmentApi.listOpenShipments();
+      final items = await shipmentApi.listOpenShipments(incoming: _isFieldBaseReceiver);
       final listJson = items.map((e) => e.toCacheJson()).toList();
 
       await _shipmentCache.saveShipmentList(listJson);
@@ -141,7 +154,7 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
 
       _toast('Manifests refreshed (${items.length}).');
     } catch (e) {
-      _toast('Refresh failed: $e');
+      _toast('Could not refresh: ${friendlyError(e)}');
     } finally {
       if (mounted) setState(() => _refreshing = false);
     }
@@ -256,15 +269,15 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
         context,
         MaterialPageRoute(
           builder: (_) => MultiScanPage(
-            title: 'Receive: Scan boxes',
+            title: 'Scan received boxes',
             expectedCount: remainingExpected.length,
-            helperText: 'Manifest: ${_shipmentDetail?['manifestNo'] ?? shipmentId}\nScan the expected boxes. Each scan will be checked against the manifest.',
+            helperText: 'Waybill ${_shipmentDetail?['manifestNo'] ?? ''}: scan each box. Boxes not on this waybill are refused.',
           ),
         ),
       );
 
       if (scans == null || scans.isEmpty) {
-        _toast('No scans captured');
+        _toast('No boxes were scanned. Nothing was saved.');
         return;
       }
 
@@ -287,7 +300,7 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
 
       final unique = scanned.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet();
       if (unique.isEmpty) {
-        _toast('No valid boxUid found in scans');
+        _toast('Those QR codes are not Anchor box labels.');
         return;
       }
 
@@ -309,6 +322,8 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
         'boxUids': boxUids,
         'note': _noteCtl.text.trim(),
         'createdAt': DateTime.now().toIso8601String(),
+        // Local cache only (ignored by the server): status the boxes take here.
+        'localStatus': _receivedBoxStatus,
       };
 
       final item = SyncQueueItem.build(
@@ -328,7 +343,7 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
       // We also keep batch/expiry if present in the QR payload.
       await _boxRepo.upsertFromScans(
         scans: parsedScans.where((m) => boxUids.contains((m['boxUid'] ?? '').toString().trim())).toList(),
-        status: 'IN_FACILITY',
+        status: _receivedBoxStatus,
         currentFacilityId: facilityId,
       );
 
@@ -350,14 +365,16 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
         await _refreshShipments();
       }
 
-      final msg = r.online
-          ? 'Received queued (${boxUids.length}). Sync: sent ${r.sent}, failed ${r.failed}.'
-          : 'Received queued (${boxUids.length}). Offline: will sync later.';
+      final msg = !r.online
+          ? '${boxUids.length} boxes received. Saved on this phone; they will sync when you are online.'
+          : r.failed > 0
+              ? '${boxUids.length} boxes received. Some records did not sync yet; see Sync.'
+              : '${boxUids.length} boxes received and synced.';
       _toast(msg);
 
       // Stay on screen so user can continue receiving remaining boxes.
     } catch (e) {
-      _toast('Receive failed: $e');
+      _toast(friendlyError(e, action: 'Receiving'));
     } finally {
       if (mounted) setState(() => _receiving = false);
     }
@@ -368,27 +385,27 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
     return showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Cannot receive'),
+        title: const Text('These boxes cannot be received'),
         content: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (unexpected.isNotEmpty) ...[
-                const Text('Unexpected (not in manifest):', style: TextStyle(fontWeight: FontWeight.w900)),
+                const Text('Not on this waybill:', style: TextStyle(fontWeight: FontWeight.w900)),
                 const SizedBox(height: 6),
                 Text(unexpected.take(10).join('\n'), style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
                 if (unexpected.length > 10) Text('… +${unexpected.length - 10} more', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
                 const SizedBox(height: 12),
               ],
               if (alreadyReceived.isNotEmpty) ...[
-                const Text('Already marked received:', style: TextStyle(fontWeight: FontWeight.w900)),
+                const Text('Already received:', style: TextStyle(fontWeight: FontWeight.w900)),
                 const SizedBox(height: 6),
                 Text(alreadyReceived.take(10).join('\n'), style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
                 if (alreadyReceived.length > 10) Text('… +${alreadyReceived.length - 10} more', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
               ],
               const SizedBox(height: 10),
               Text(
-                'Tip: Select the correct manifest. The server will also enforce that boxes can only be received into the intended facility.',
+                'Check that you chose the right waybill. Nothing was saved; scan again when ready.',
                 style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
               ),
             ],
@@ -414,99 +431,77 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
     }
 
     final role = (_me?['role'] ?? '').toString();
-    final canUse = role == 'FACILITY_OFFICER' || role == 'CLINICIAN' || role == 'SUPER_ADMIN';
+    final canUse = role == 'FACILITY_OFFICER' || role == 'CLINICIAN' || role == 'SUPER_ADMIN' || _isFieldBaseReceiver;
 
     final selected = _shipmentId;
     final detail = _shipmentDetail;
     final manifestNo = (detail?['manifestNo'] ?? '').toString().trim();
+    final hasSelection = selected != null && selected.trim().isNotEmpty;
 
     final expectedCount = _expected.length;
     final receivedCount = _received.length;
     final remainingCount = _expected.difference(_received).length;
+    final title = _isFieldBaseReceiver ? 'Receive transfer' : 'Receive shipment';
 
     return Scaffold(
-      appBar: const AcfAppBar(title: 'Receive shipment'),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: !canUse
-            ? Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text('Your role ($role) cannot receive.', style: TextStyle(color: cs.onSurfaceVariant)),
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.arrow_back),
-                        label: const Text('Back'),
-                      ),
-                    ],
-                  ),
-                ),
-              )
-            : ListView(
-                children: [
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const Text('Receiving facility (locked)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
-                          const SizedBox(height: 8),
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: cs.surfaceVariant,
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(Icons.apartment, color: cs.primary),
-                                const SizedBox(width: 10),
-                                Expanded(child: Text(_facilityLabel, style: const TextStyle(fontWeight: FontWeight.w900))),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
+      appBar: AnchorAppBar(title: title),
+      body: !canUse
+          ? const Padding(
+              padding: EdgeInsets.all(16),
+              child: AnchorNotice('Your account cannot receive boxes here.', warning: true),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.place_outlined, size: 18, color: cs.primary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text('Receiving at $_facilityLabel', style: TextStyle(fontWeight: FontWeight.w800, color: cs.onSurface)),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Row(
-                            children: [
-                              const Expanded(
-                                child: Text('Manifest / Waybill', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: AnchorStep(
+                                number: 1,
+                                title: 'Choose the delivery',
+                                hint: 'Pick the waybill number written on the delivery papers.',
+                                done: hasSelection,
                               ),
-                              TextButton.icon(
-                                onPressed: _refreshing ? null : _refreshShipments,
-                                icon: _refreshing
-                                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                                    : const Icon(Icons.refresh),
-                                label: const Text('Refresh'),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
+                            ),
+                            IconButton(
+                              tooltip: 'Check for new deliveries',
+                              onPressed: _refreshing ? null : _refreshShipments,
+                              icon: _refreshing
+                                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : const Icon(Icons.refresh),
+                            ),
+                          ],
+                        ),
+                        if (_shipments.isEmpty)
+                          const AnchorNotice('No deliveries on their way to you. When online, tap refresh to check again.')
+                        else
                           DropdownButtonFormField<String>(
                             value: selected,
-                            decoration: const InputDecoration(labelText: 'Select manifest'),
+                            isExpanded: true,
+                            decoration: const InputDecoration(labelText: 'Waybill', prefixIcon: Icon(Icons.receipt_long_outlined)),
+                            hint: const Text('Choose a waybill'),
                             items: _shipments
-                                .map(
-                                  (s) => DropdownMenuItem(
-                                    value: (s['id'] ?? '').toString(),
-                                    child: Text('${(s['manifestNo'] ?? '').toString()}  •  ${(s['itemCount'] ?? 0)} boxes'),
-                                  ),
-                                )
+                                .map((s) => DropdownMenuItem(
+                                      value: (s['id'] ?? '').toString(),
+                                      child: Text('${(s['manifestNo'] ?? '').toString()}  ·  ${(s['itemCount'] ?? 0)} boxes', overflow: TextOverflow.ellipsis),
+                                    ))
                                 .toList(),
                             onChanged: _receiving
                                 ? null
@@ -521,70 +516,69 @@ class _FacilityReceiveScreenState extends State<FacilityReceiveScreen> {
                                     await _loadShipmentDetail(v.trim(), allowNetwork: true);
                                   },
                           ),
-                          const SizedBox(height: 10),
-                          if (selected == null || selected.trim().isEmpty)
-                            Text('No manifest cached. Tap Refresh (online).', style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant))
-                          else
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: cs.outlineVariant),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    manifestNo.isNotEmpty ? 'Manifest: $manifestNo' : 'Manifest ID: $selected',
-                                    style: const TextStyle(fontWeight: FontWeight.w900),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text('Expected: $expectedCount  •  Received (local): $receivedCount  •  Remaining: $remainingCount',
-                                      style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
-                                ],
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const Text('Scan & receive', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
-                          const SizedBox(height: 10),
-                          TextField(
-                            controller: _noteCtl,
-                            decoration: const InputDecoration(
-                              labelText: 'Note (optional)',
-                              hintText: 'e.g. received by, condition...',
-                            ),
-                            enabled: !_receiving,
-                          ),
-                          const SizedBox(height: 12),
-                          FilledButton.icon(
-                            onPressed: _receiving ? null : _startReceive,
-                            icon: _receiving
-                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                                : const Icon(Icons.qr_code_scanner),
-                            label: const Text('Scan expected boxes → queue RECEIVE'),
-                          ),
-                          const SizedBox(height: 10),
+                        if (hasSelection && expectedCount > 0) ...[
+                          const SizedBox(height: 14),
                           Text(
-                            'This is manifest-driven. The app blocks boxes that are not in the selected manifest, and the server also enforces the destination facility during sync.',
-                            style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                            manifestNo.isNotEmpty ? manifestNo : 'Selected delivery',
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 8),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(999),
+                            child: LinearProgressIndicator(
+                              value: expectedCount == 0 ? 0 : receivedCount / expectedCount,
+                              minHeight: 10,
+                              backgroundColor: cs.surfaceContainerHighest,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            remainingCount == 0
+                                ? 'All $expectedCount boxes received.'
+                                : '$receivedCount of $expectedCount boxes received · $remainingCount to scan',
+                            style: TextStyle(fontSize: 13, color: remainingCount == 0 ? const Color(0xFF1B7F4B) : cs.onSurfaceVariant, fontWeight: FontWeight.w700),
                           ),
                         ],
-                      ),
+                      ],
                     ),
                   ),
-                ],
-              ),
-      ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const AnchorStep(
+                          number: 2,
+                          title: 'Scan the boxes',
+                          hint: 'Scan every box you received. Boxes that are not on this waybill are refused.',
+                        ),
+                        TextField(
+                          controller: _noteCtl,
+                          decoration: const InputDecoration(labelText: 'Note (optional)', hintText: 'Received by, condition of boxes…', prefixIcon: Icon(Icons.notes)),
+                          enabled: !_receiving,
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 52,
+                          child: FilledButton.icon(
+                            onPressed: _receiving || !hasSelection || remainingCount == 0 ? null : _startReceive,
+                            icon: _receiving
+                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Icon(Icons.qr_code_scanner),
+                            label: Text(remainingCount > 0 ? 'Scan $remainingCount boxes' : 'Scan boxes'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const AnchorNotice('Works offline. Received boxes appear in your store at once and are sent to the server when there is internet.', icon: Icons.cloud_done_outlined),
+              ],
+            ),
     );
   }
 }

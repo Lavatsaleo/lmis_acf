@@ -85,6 +85,38 @@ class AuthApi {
     throw Exception('Unexpected refresh response');
   }
 
+  /// Set a new password for the signed-in user. The server signs out every
+  /// other session and returns fresh tokens for this one.
+  Future<LoginResponse> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final resp = await _api.request(
+      method: 'POST',
+      path: '/api/auth/change-password',
+      data: {
+        'currentPassword': currentPassword,
+        'newPassword': newPassword,
+      },
+    );
+
+    final data = resp.data;
+    if (data is Map) {
+      final m = data.cast<String, dynamic>();
+      final accessToken = (m['accessToken'] ?? '').toString();
+      final refreshToken = (m['refreshToken'] ?? '').toString();
+      if (accessToken.isEmpty || refreshToken.isEmpty) {
+        throw Exception('Password change did not return tokens');
+      }
+      final user = (m['user'] is Map)
+          ? (m['user'] as Map).cast<String, dynamic>()
+          : <String, dynamic>{};
+      return LoginResponse(accessToken: accessToken, refreshToken: refreshToken, user: user);
+    }
+
+    throw Exception('Unexpected change-password response');
+  }
+
   /// Fetch enriched session info from backend.
   ///
   /// Backend: GET /api/me => { user: { ...facilityType, warehouseId, ... } }

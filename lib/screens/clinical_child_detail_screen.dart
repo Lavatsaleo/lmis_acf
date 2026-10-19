@@ -13,7 +13,7 @@ import '../screens/clinical_followup_visit_screen.dart';
 import '../screens/clinical_edit_child_screen.dart';
 import '../widgets/nutrition_snapshot_card.dart';
 import '../widgets/whz_growth_chart_card.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 import '../utils/clinical/clinical_status.dart';
 import '../widgets/clinical_status_card.dart';
 
@@ -80,7 +80,7 @@ class _ClinicalChildDetailScreenState extends State<ClinicalChildDetailScreen> {
     final canEditChildDetails = true;
 
     return Scaffold(
-      appBar: AcfAppBar(
+      appBar: AnchorAppBar(
         title: 'Child details',
         actions: [
           if (canEditChildDetails)

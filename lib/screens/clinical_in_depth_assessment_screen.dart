@@ -14,7 +14,7 @@ import '../core/sync/sync_service.dart';
 
 import '../utils/growth/growth_models.dart';
 import '../utils/growth/whz_calculator.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 
 
 enum InDepthAssessmentMode {
@@ -1068,7 +1068,7 @@ class _ClinicalInDepthAssessmentScreenState extends State<ClinicalInDepthAssessm
     final inIYCFRange = _ageMonths != null && _ageMonths! >= 6 && _ageMonths! <= 23;
 
     return Scaffold(
-      appBar: AcfAppBar(
+      appBar: AnchorAppBar(
         title: widget.mode == InDepthAssessmentMode.enrollment
             ? 'In-depth assessment (Enrollment)'
             : 'In-depth assessment (Discharge)',

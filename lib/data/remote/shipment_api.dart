@@ -176,8 +176,11 @@ class ShipmentApi {
 
   ShipmentApi(this._api);
 
-  Future<List<ShipmentListItemDto>> listOpenShipments() async {
-    final path = '${AppConfig.shipmentsPath}?status=DISPATCHED';
+  /// Open (DISPATCHED) shipments for the user's location. [incoming] asks for
+  /// transfers coming INTO the user's warehouse (a field base receiving from
+  /// the main warehouse); facility users always get shipments to them.
+  Future<List<ShipmentListItemDto>> listOpenShipments({bool incoming = false}) async {
+    final path = '${AppConfig.shipmentsPath}?status=DISPATCHED${incoming ? '&direction=incoming' : ''}';
     final resp = await _api.request(method: 'GET', path: path);
     final data = resp.data;
     if (data is List) {

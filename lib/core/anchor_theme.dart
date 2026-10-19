@@ -1,24 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:lmis_acf/core/colors.dart';
 
-/// Action Against Hunger (ACF) theme.
+/// Anchor theme (matches the web dashboard).
 ///
 /// Goal:
 /// - Clean, executive-friendly UI
 /// - Consistent spacing + rounded corners
 /// - Works well in both Light and Dark mode
-ThemeData buildAcfTheme({Brightness brightness = Brightness.light}) {
+ThemeData buildAnchorTheme({Brightness brightness = Brightness.light}) {
+  final isDark = brightness == Brightness.dark;
+
   final baseScheme = ColorScheme.fromSeed(
-    seedColor: acfBlue,
+    seedColor: anchorTeal,
     brightness: brightness,
   );
 
-  // Ensure we use ACF green as the accent/secondary.
-  final scheme = baseScheme.copyWith(secondary: acfGreen);
+  // Keep the exact brand teal as primary in light mode (fromSeed shifts it);
+  // dark mode uses the generated lighter tone for contrast.
+  final scheme = isDark
+      ? baseScheme
+      : baseScheme.copyWith(
+          primary: anchorTeal,
+          onPrimary: Colors.white,
+          secondary: anchorInk,
+          onSurface: anchorInk,
+          onSurfaceVariant: anchorMuted,
+        );
 
-  final isDark = brightness == Brightness.dark;
-
-  final scaffoldBg = isDark ? const Color(0xFF0B0F17) : const Color(0xFFF6F7F9);
+  final scaffoldBg = isDark ? const Color(0xFF0B0F17) : anchorSurface;
   final cardBg = isDark ? const Color(0xFF121826) : Colors.white;
 
   final borderColor = isDark ? Colors.white12 : Colors.black12;

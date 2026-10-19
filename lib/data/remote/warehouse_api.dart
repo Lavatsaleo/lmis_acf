@@ -19,7 +19,12 @@ class WarehouseBoxSummaryItem {
       boxUid: (j['boxUid'] ?? '').toString(),
       batchNo: j['batchNo']?.toString(),
       expiryDate: j['expiryDate']?.toString(),
-      sachetsRemaining: (j['sachetsRemaining'] is num) ? (j['sachetsRemaining'] as num).round() : 600,
+      // Pack sizes are configurable: fall back to the box's own size, never a fixed 600.
+      sachetsRemaining: (j['sachetsRemaining'] is num)
+          ? (j['sachetsRemaining'] as num).round()
+          : (j['sachetsPerBox'] is num)
+              ? (j['sachetsPerBox'] as num).round()
+              : 0,
     );
   }
 }
@@ -45,8 +50,9 @@ class WarehouseSummaryDto {
     }
     return WarehouseSummaryDto(
       boxesInWarehouse: (j['boxesInWarehouse'] is num) ? (j['boxesInWarehouse'] as num).round() : boxes.length,
-      totalSachetsAvailable:
-          (j['totalSachetsAvailable'] is num) ? (j['totalSachetsAvailable'] as num).round() : (boxes.length * 600),
+      totalSachetsAvailable: (j['totalSachetsAvailable'] is num)
+          ? (j['totalSachetsAvailable'] as num).round()
+          : boxes.fold<int>(0, (sum, b) => sum + b.sachetsRemaining),
       boxes: boxes,
     );
   }

@@ -190,11 +190,13 @@ class ApiClient {
     );
   }
 
+  /// [receiveTimeout] overrides the default (20s) for slow server operations.
   Future<Response<dynamic>> request({
     required String method,
     required String path,
     Map<String, dynamic>? headers,
     dynamic data,
+    Duration? receiveTimeout,
   }) async {
     final upper = method.trim().toUpperCase();
 
@@ -212,7 +214,7 @@ class ApiClient {
 
     final normalizedPath = path.startsWith('/') ? path.substring(1) : path;
 
-    final opts = Options(method: upper, headers: headers);
+    final opts = Options(method: upper, headers: headers, receiveTimeout: receiveTimeout);
     return _dio.request<dynamic>(normalizedPath, data: body, options: opts);
   }
 }

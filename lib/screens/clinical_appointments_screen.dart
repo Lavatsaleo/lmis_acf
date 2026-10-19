@@ -10,7 +10,7 @@ import '../data/local/isar/clinical_assessment.dart';
 import '../data/local/isar/clinical_child.dart';
 import '../data/remote/clinical_remote_sync_service.dart';
 import 'clinical_child_detail_screen.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 
 class ClinicalAppointmentsScreen extends StatefulWidget {
   const ClinicalAppointmentsScreen({super.key});
@@ -106,7 +106,7 @@ class _ClinicalAppointmentsScreenState extends State<ClinicalAppointmentsScreen>
     final missed = isPastOrToday ? (_rows.length - seen) : 0;
 
     return Scaffold(
-      appBar: AcfAppBar(
+      appBar: AnchorAppBar(
         title: 'Appointments diary',
         actions: [
           IconButton(

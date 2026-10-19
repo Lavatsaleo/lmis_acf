@@ -8,7 +8,7 @@ import '../core/sync/sync_service.dart';
 import '../data/local/sync/sync_queue_repo.dart';
 import '../data/local/isar/sync_queue_item.dart';
 import 'queue_inspector_screen.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
 
 /// Step 8: Clinical enrollment + baseline in-depth assessment (MVP).
 ///
@@ -314,7 +314,7 @@ class _ClinicalRegisterEnrollScreenState extends State<ClinicalRegisterEnrollScr
     return WillPopScope(
       onWillPop: () async => !_saving,
       child: Scaffold(
-        appBar: AcfAppBar(
+        appBar: AnchorAppBar(
         title: 'Register child',
         actions: [
           IconButton(

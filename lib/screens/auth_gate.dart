@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../data/local/auth/session_store.dart';
 import '../data/local/auth/token_store.dart';
+import 'change_password_screen.dart';
 import 'main_shell.dart';
 import 'login_screen.dart';
 
@@ -22,6 +23,8 @@ class _AuthGateState extends State<AuthGate> {
 
   bool _loading = true;
   bool _hasSession = false;
+  // The app was closed before the user set their own password.
+  bool _mustChangePassword = false;
 
   @override
   void initState() {
@@ -35,6 +38,7 @@ class _AuthGateState extends State<AuthGate> {
     if (!mounted) return;
     setState(() {
       _hasSession = (token != null && token.trim().isNotEmpty && user != null && user.isNotEmpty);
+      _mustChangePassword = user?['mustChangePassword'] == true;
       _loading = false;
     });
   }
@@ -47,6 +51,9 @@ class _AuthGateState extends State<AuthGate> {
       );
     }
 
+    if (_hasSession && _mustChangePassword) {
+      return const ChangePasswordScreen(required: true);
+    }
     if (_hasSession) {
       return const MainShell();
     }

@@ -12,7 +12,8 @@ import '../data/local/isar/sync_queue_item.dart';
 import '../data/remote/api_client.dart';
 import '../data/remote/box_api.dart';
 import '../commodity/multi_scan_page.dart';
-import '../widgets/acf_brand.dart';
+import '../widgets/anchor_brand.dart';
+import '../widgets/anchor_ui.dart';
 
 /// Step 7: Box lookup + timeline.
 ///
@@ -70,9 +71,9 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
       context,
       MaterialPageRoute(
         builder: (_) => const MultiScanPage(
-          title: 'Scan a box QR',
+          title: 'Scan a box label',
           expectedCount: 1,
-          helperText: 'Scan 1 box. We will lookup it in local cache and show pending actions.',
+          helperText: 'Scan one box label to see where the box is and what happened to it.',
         ),
       ),
     );
@@ -206,8 +207,8 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AcfAppBar(
-        title: 'Box lookup',
+      appBar: AnchorAppBar(
+        title: 'Find a box',
         actions: [
           IconButton(
             tooltip: 'Scan box',
@@ -225,7 +226,7 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Search', style: TextStyle(fontWeight: FontWeight.w900)),
+                  const Text('Scan the label or type the box number', style: TextStyle(fontWeight: FontWeight.w900)),
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -235,8 +236,8 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
                           textInputAction: TextInputAction.search,
                           onSubmitted: (_) => _lookup(fetchServer: false),
                           decoration: const InputDecoration(
-                            labelText: 'Box UID',
-                            hintText: 'Scan or type the box UID',
+                            labelText: 'Box number',
+                            hintText: 'e.g. SO11887-125',
                             prefixIcon: Icon(Icons.inventory_2_outlined),
                           ),
                         ),
@@ -246,7 +247,7 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
                         onPressed: _loading ? null : () => _lookup(fetchServer: false),
                         child: _loading
                             ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Text('Lookup'),
+                            : const Text('Find'),
                       ),
                     ],
                   ),
@@ -257,7 +258,7 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
                         child: OutlinedButton.icon(
                           onPressed: _loading ? null : () => _lookup(fetchServer: true),
                           icon: const Icon(Icons.cloud_download_outlined),
-                          label: const Text('Refresh from server'),
+                          label: const Text('Get latest from server'),
                         ),
                       ),
                     ],
@@ -402,7 +403,7 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Pending offline actions', style: TextStyle(fontWeight: FontWeight.w900)),
+            const Text('Waiting to sync from this phone', style: TextStyle(fontWeight: FontWeight.w900)),
             const SizedBox(height: 6),
             Text(
               'These are queue items on the phone that reference this box. They may not be synced yet.',
@@ -432,7 +433,7 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Box timeline', style: TextStyle(fontWeight: FontWeight.w900)),
+            const Text('History', style: TextStyle(fontWeight: FontWeight.w900)),
             const SizedBox(height: 6),
             Text(
               'If you refresh from server (online), we display known historical events.',
@@ -440,9 +441,9 @@ class _BoxLookupScreenState extends State<BoxLookupScreen> {
             ),
             const SizedBox(height: 10),
             if (_server == null)
-              Text('No server data yet. Tap “Refresh from server”.', style: TextStyle(color: cs.onSurfaceVariant))
+              Text('Tap “Get latest from server” to see this box’s history.', style: TextStyle(color: cs.onSurfaceVariant))
             else if (events.isEmpty)
-              Text('No events returned by server for this box.', style: TextStyle(color: cs.onSurfaceVariant))
+              Text('No history recorded for this box yet.', style: TextStyle(color: cs.onSurfaceVariant))
             else
               ...sorted.map((e) => _EventTile(e: e, facilityLabel: _facilityLabel)).toList(),
           ],

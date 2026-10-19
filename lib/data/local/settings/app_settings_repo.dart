@@ -29,6 +29,7 @@ class AppSettingsRepo {
   String _storeUpdatedAtKey(String facilityId) => '$_kStoreUpdatedAtPrefix${facilityId.trim()}';
   String _clinicalPullAtKey(String facilityId) => '$_kClinicalPullAtPrefix${facilityId.trim()}';
   String _clinicalPullOkAtKey(String facilityId) => '$_kClinicalPullOkAtPrefix${facilityId.trim()}';
+  String _clinicalPullCursorIdKey(String facilityId) => '${_kClinicalPullAtPrefix}cursor_${facilityId.trim()}';
 
   Future<void> cacheFacilityStoreSummary({
     required String facilityId,
@@ -80,12 +81,28 @@ class AppSettingsRepo {
     return DateTime.tryParse(raw.trim());
   }
 
-  Future<void> setClinicalLastPullAt(String facilityId, DateTime value) async {
+  /// [cursorId] is the server's tie-break id for the delta cursor; null means
+  /// the next pull starts at [value] itself.
+  Future<void> setClinicalLastPullAt(String facilityId, DateTime value, {String? cursorId}) async {
     final id = facilityId.trim();
     if (id.isEmpty) return;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_clinicalPullAtKey(id), value.toUtc().toIso8601String());
     await prefs.setString(_clinicalPullOkAtKey(id), DateTime.now().toUtc().toIso8601String());
+    final cursor = (cursorId ?? '').trim();
+    if (cursor.isEmpty) {
+      await prefs.remove(_clinicalPullCursorIdKey(id));
+    } else {
+      await prefs.setString(_clinicalPullCursorIdKey(id), cursor);
+    }
+  }
+
+  Future<String?> getClinicalLastPullCursorId(String facilityId) async {
+    final id = facilityId.trim();
+    if (id.isEmpty) return null;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_clinicalPullCursorIdKey(id));
+    return (raw == null || raw.trim().isEmpty) ? null : raw.trim();
   }
 
   Future<DateTime?> getClinicalLastSuccessfulPullRecordedAt(String facilityId) async {
@@ -103,5 +120,6 @@ class AppSettingsRepo {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_clinicalPullAtKey(id));
     await prefs.remove(_clinicalPullOkAtKey(id));
+    await prefs.remove(_clinicalPullCursorIdKey(id));
   }
 }

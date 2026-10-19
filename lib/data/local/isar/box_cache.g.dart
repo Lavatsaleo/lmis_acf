@@ -47,13 +47,23 @@ const BoxCacheSchema = CollectionSchema(
       name: r'productId',
       type: IsarType.string,
     ),
-    r'status': PropertySchema(
+    r'sachetsPerBox': PropertySchema(
       id: 6,
+      name: r'sachetsPerBox',
+      type: IsarType.long,
+    ),
+    r'sachetsRemaining': PropertySchema(
+      id: 7,
+      name: r'sachetsRemaining',
+      type: IsarType.long,
+    ),
+    r'status': PropertySchema(
+      id: 8,
       name: r'status',
       type: IsarType.string,
     ),
     r'updatedAt': PropertySchema(
-      id: 7,
+      id: 9,
       name: r'updatedAt',
       type: IsarType.dateTime,
     )
@@ -133,8 +143,10 @@ void _boxCacheSerialize(
   writer.writeDateTime(offsets[3], object.expiryDate);
   writer.writeString(offsets[4], object.orderId);
   writer.writeString(offsets[5], object.productId);
-  writer.writeString(offsets[6], object.status);
-  writer.writeDateTime(offsets[7], object.updatedAt);
+  writer.writeLong(offsets[6], object.sachetsPerBox);
+  writer.writeLong(offsets[7], object.sachetsRemaining);
+  writer.writeString(offsets[8], object.status);
+  writer.writeDateTime(offsets[9], object.updatedAt);
 }
 
 BoxCache _boxCacheDeserialize(
@@ -151,8 +163,10 @@ BoxCache _boxCacheDeserialize(
   object.id = id;
   object.orderId = reader.readStringOrNull(offsets[4]);
   object.productId = reader.readStringOrNull(offsets[5]);
-  object.status = reader.readString(offsets[6]);
-  object.updatedAt = reader.readDateTime(offsets[7]);
+  object.sachetsPerBox = reader.readLongOrNull(offsets[6]);
+  object.sachetsRemaining = reader.readLongOrNull(offsets[7]);
+  object.status = reader.readString(offsets[8]);
+  object.updatedAt = reader.readDateTime(offsets[9]);
   return object;
 }
 
@@ -176,8 +190,12 @@ P _boxCacheDeserializeProp<P>(
     case 5:
       return (reader.readStringOrNull(offset)) as P;
     case 6:
-      return (reader.readString(offset)) as P;
+      return (reader.readLongOrNull(offset)) as P;
     case 7:
+      return (reader.readLongOrNull(offset)) as P;
+    case 8:
+      return (reader.readString(offset)) as P;
+    case 9:
       return (reader.readDateTime(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -1217,6 +1235,152 @@ extension BoxCacheQueryFilter
     });
   }
 
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsPerBoxIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'sachetsPerBox',
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsPerBoxIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'sachetsPerBox',
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition> sachetsPerBoxEqualTo(
+      int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'sachetsPerBox',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsPerBoxGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'sachetsPerBox',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition> sachetsPerBoxLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'sachetsPerBox',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition> sachetsPerBoxBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'sachetsPerBox',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsRemainingIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'sachetsRemaining',
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsRemainingIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'sachetsRemaining',
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsRemainingEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'sachetsRemaining',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsRemainingGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'sachetsRemaining',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsRemainingLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'sachetsRemaining',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition>
+      sachetsRemainingBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'sachetsRemaining',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
   QueryBuilder<BoxCache, BoxCache, QAfterFilterCondition> statusEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -1480,6 +1644,30 @@ extension BoxCacheQuerySortBy on QueryBuilder<BoxCache, BoxCache, QSortBy> {
     });
   }
 
+  QueryBuilder<BoxCache, BoxCache, QAfterSortBy> sortBySachetsPerBox() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sachetsPerBox', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterSortBy> sortBySachetsPerBoxDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sachetsPerBox', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterSortBy> sortBySachetsRemaining() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sachetsRemaining', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterSortBy> sortBySachetsRemainingDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sachetsRemaining', Sort.desc);
+    });
+  }
+
   QueryBuilder<BoxCache, BoxCache, QAfterSortBy> sortByStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'status', Sort.asc);
@@ -1591,6 +1779,30 @@ extension BoxCacheQuerySortThenBy
     });
   }
 
+  QueryBuilder<BoxCache, BoxCache, QAfterSortBy> thenBySachetsPerBox() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sachetsPerBox', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterSortBy> thenBySachetsPerBoxDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sachetsPerBox', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterSortBy> thenBySachetsRemaining() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sachetsRemaining', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QAfterSortBy> thenBySachetsRemainingDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sachetsRemaining', Sort.desc);
+    });
+  }
+
   QueryBuilder<BoxCache, BoxCache, QAfterSortBy> thenByStatus() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'status', Sort.asc);
@@ -1660,6 +1872,18 @@ extension BoxCacheQueryWhereDistinct
     });
   }
 
+  QueryBuilder<BoxCache, BoxCache, QDistinct> distinctBySachetsPerBox() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'sachetsPerBox');
+    });
+  }
+
+  QueryBuilder<BoxCache, BoxCache, QDistinct> distinctBySachetsRemaining() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'sachetsRemaining');
+    });
+  }
+
   QueryBuilder<BoxCache, BoxCache, QDistinct> distinctByStatus(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -1716,6 +1940,18 @@ extension BoxCacheQueryProperty
   QueryBuilder<BoxCache, String?, QQueryOperations> productIdProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'productId');
+    });
+  }
+
+  QueryBuilder<BoxCache, int?, QQueryOperations> sachetsPerBoxProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'sachetsPerBox');
+    });
+  }
+
+  QueryBuilder<BoxCache, int?, QQueryOperations> sachetsRemainingProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'sachetsRemaining');
     });
   }
 
