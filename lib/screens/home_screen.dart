@@ -8,6 +8,7 @@ import '../data/local/auth/session_store.dart';
 import '../data/local/settings/app_settings_repo.dart';
 import '../data/local/sync/sync_queue_repo.dart';
 import '../data/remote/api_client.dart';
+import '../data/remote/auth_api.dart';
 import '../data/remote/warehouse_api.dart';
 import '../widgets/anchor_brand.dart';
 import '../widgets/anchor_ui.dart';
@@ -18,6 +19,7 @@ import 'facility_receive_screen.dart';
 import 'facility_store_screen.dart';
 import 'generate_boxes_screen.dart';
 import 'receive_po_screen.dart';
+import 'samples/samples_home_screen.dart';
 import 'stock_control_screens.dart';
 
 /// Home: the user's own tasks, grouped by area.
@@ -101,6 +103,20 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) setState(() => _loadingStock = false);
     }
+  }
+
+  /// After the working warehouse changes: read the profile again.
+  Future<void> _reloadProfile() async {
+    try {
+      final api = ApiClient.create(baseUrl: await _settingsRepo.getBaseUrl());
+      final fresh = await AuthApi(api).fetchMe();
+      final saved = await _sessionStore.readUserJson();
+      if (fresh.isNotEmpty) await _sessionStore.saveUserJson({...?saved, ...fresh});
+    } catch (_) {
+      // Keep the saved profile; the next start refreshes it.
+    }
+    _stock = null;
+    await _load();
   }
 
   /// Opens a task and refreshes the stock figures when it comes back.
@@ -202,6 +218,21 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
     ];
 
+    final sampleTasks = <AnchorTask>[
+      if (a.canSamples)
+        AnchorTask(
+          title: a.canSamplesLab ? 'Receive & check samples' : a.canSamplesHub ? 'Sample consignments' : 'Research samples',
+          subtitle: a.canSamplesLab
+              ? 'Scan consignments and their tubes'
+              : a.canSamplesHub
+                  ? 'Receive from bases, ship to the lab'
+                  : 'Receive tubes, pack, send to Juba',
+          icon: Icons.science_outlined,
+          needsInternet: true,
+          onTap: () => _open(SamplesHomeScreen(access: a)),
+        ),
+    ];
+
     final toolTasks = <AnchorTask>[
       if (a.canBoxLookup)
         AnchorTask(
@@ -220,6 +251,10 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           children: [
             _Greeting(greeting: _greeting, access: a, conn: _conn),
+            if (a.isLogisticsManager) ...[
+              const SizedBox(height: 10),
+              _WorkingWarehouse(access: a, online: _online, onChanged: _reloadProfile),
+            ],
             if (a.usesOfflineQueue) _PendingSyncBanner(repo: _queueRepo, onOpen: widget.onOpenSync),
             if (!a.hasMobileTasks) ...[
               const SizedBox(height: 16),
@@ -248,6 +283,11 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 12),
               const AnchorSectionTitle('Clinical', subtitle: 'Works offline, syncs later'),
               AnchorTaskGrid(tasks: clinicalTasks, online: _online),
+            ],
+            if (sampleTasks.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const AnchorSectionTitle('Research samples', subtitle: 'Needs internet'),
+              AnchorTaskGrid(tasks: sampleTasks, online: _online),
             ],
             if (toolTasks.isNotEmpty) ...[
               const SizedBox(height: 12),
@@ -416,6 +456,71 @@ class _PendingSyncBanner extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// Logistics manager: the warehouse they are working at. Receiving, counts,
+/// labels and dispatch happen there; they switch when they move.
+class _WorkingWarehouse extends StatelessWidget {
+  final UserAccess access;
+  final bool online;
+  final Future<void> Function() onChanged;
+
+  const _WorkingWarehouse({required this.access, required this.online, required this.onChanged});
+
+  Future<void> _choose(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final api = ApiClient.create(baseUrl: await AppSettingsRepo().getBaseUrl());
+      final res = await api.request(method: 'GET', path: '/api/me/working-locations');
+      final data = (res.data is Map) ? (res.data as Map) : const {};
+      final list = (data['warehouses'] is List) ? (data['warehouses'] as List).whereType<Map>().toList() : <Map>[];
+      final current = (data['current'] ?? '').toString();
+      if (!context.mounted) return;
+      final picked = await showModalBottomSheet<String>(
+        context: context,
+        showDragHandle: true,
+        builder: (ctx) => SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text('Where are you working?', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
+              ),
+              for (final w in list)
+                ListTile(
+                  leading: Icon(w['id'].toString() == current ? Icons.radio_button_checked : Icons.radio_button_off),
+                  title: Text((w['name'] ?? '').toString()),
+                  subtitle: Text((w['code'] ?? '').toString()),
+                  onTap: () => Navigator.pop(ctx, w['id'].toString()),
+                ),
+            ],
+          ),
+        ),
+      );
+      if (picked == null || picked == current) return;
+      await api.request(method: 'POST', path: '/api/me/working-location', data: {'facilityId': picked});
+      await onChanged();
+      messenger.showSnackBar(const SnackBar(content: Text('Working warehouse changed.')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Could not change the warehouse: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: ListTile(
+        leading: const Icon(Icons.warehouse_outlined),
+        title: Text(access.locationName.isNotEmpty ? access.locationName : 'Choose a warehouse'),
+        subtitle: Text(online ? 'Working warehouse · tap to change' : 'Working warehouse · go online to change'),
+        trailing: const Icon(Icons.swap_horiz),
+        enabled: online,
+        onTap: online ? () => _choose(context) : null,
+      ),
     );
   }
 }

@@ -17,6 +17,9 @@ class PlatformContext {
   /// count, report loss). Off unless the country has switched them on.
   final bool warehouseTools;
 
+  /// Research samples (swabs) are tracked from the sites to the laboratory.
+  final bool sampleTracking;
+
   const PlatformContext({
     required this.isConfigured,
     required this.countryId,
@@ -27,6 +30,7 @@ class PlatformContext {
     required this.implementationName,
     required this.enabledModules,
     this.warehouseTools = false,
+    this.sampleTracking = false,
   });
 
   factory PlatformContext.fromUserJson(Map<String, dynamic>? user) {
@@ -65,6 +69,7 @@ class PlatformContext {
       implementationName: value(implementation, 'name'),
       enabledModules: modules,
       warehouseTools: implementation['warehouseTools'] == true,
+      sampleTracking: implementation['sampleTracking'] == true,
     );
   }
 

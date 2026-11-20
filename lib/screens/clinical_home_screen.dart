@@ -99,7 +99,8 @@ class _ClinicalHomeScreenState extends State<ClinicalHomeScreen> {
 
   bool get _canUseClinical {
     final r = _role ?? '';
-    return r == 'CLINICIAN' || r == 'SUPER_ADMIN';
+    // Facility Staff (FACILITY_OFFICER) is the merged Clinician role.
+    return r == 'CLINICIAN' || r == 'FACILITY_OFFICER' || r == 'SUPER_ADMIN';
   }
 
   @override
